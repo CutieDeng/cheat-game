@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>推理对局</title>
+<link rel="stylesheet" href="/style.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <h1 id="title">推理对局</h1>
+  <div class="turnbox">
+    <span id="turn" class="turn">—</span>
+    <span id="phase" class="badge confront" hidden>对质阶段</span>
+  </div>
+  <form id="newgame" class="newgame">
+    <select id="case-select" aria-label="案件"></select>
+    <label>种子 <input id="seed" type="number" min="0" placeholder="随机"></label>
+    <label title="NPC 可以只说一部分、编造、嫁祸、撤回说法"><input id="ext" type="checkbox"> 扩展动作</label>
+    <button type="submit">新的一局</button>
+  </form>
+</header>
+
+<main class="layout">
+  <aside class="panel left">
+    <section>
+      <h2>在场者 <small>点选即为询问对象</small></h2>
+      <ul id="npc-list" class="npcs"></ul>
+    </section>
+    <section>
+      <h2>证物</h2>
+      <ul id="evidence-list" class="items"></ul>
+    </section>
+    <section class="grow">
+      <h2>证词 <small id="claim-count"></small></h2>
+      <label class="filter"><input id="claim-filter" type="checkbox"> 只看当前对象说的</label>
+      <ul id="claim-list" class="items"></ul>
+    </section>
+  </aside>
+
+  <section class="center">
+    <div id="briefing" class="briefing"></div>
+    <div id="chat" class="chat" aria-live="polite"></div>
+    <div id="ask-panel" class="ask">
+      <div class="ask-row">
+        <span class="ask-label">询问 <b id="ask-target">—</b>：关于</span>
+        <div id="subject-choices" class="chips"></div>
+      </div>
+      <div class="ask-row">
+        <span class="ask-label">问 <small id="ask-cost"></small></span>
+        <div id="topic-choices" class="chips"></div>
+      </div>
+    </div>
+  </section>
+
+  <aside class="panel right">
+    <section>
+      <h2>行动点</h2>
+      <div class="meter"><div id="meter-fill" class="meter-fill"></div><div id="meter-phase" class="meter-phase"></div></div>
+      <p id="turn-detail" class="muted"></p>
+    </section>
+    <section>
+      <h2>被拆穿的谎言</h2>
+      <ul id="exposed-list" class="notes"></ul>
+    </section>
+    <section>
+      <h2>回避过的问题</h2>
+      <ul id="evaded-list" class="notes"></ul>
+    </section>
+    <section class="accuse">
+      <button id="accuse-btn" class="danger" type="button">指认</button>
+      <p class="muted">指认会立刻结束本局：对方是凶手且证据足够才算破案。</p>
+      <label class="filter"><input id="show-clauses" type="checkbox"> 在对话里显示声明层子句（调试）</label>
+    </section>
+  </aside>
+</main>
+
+<div id="ending" class="ending" hidden>
+  <div class="ending-box">
+    <h2 id="ending-title"></h2>
+    <p id="ending-text"></p>
+    <button id="ending-close" type="button">查看记录</button>
+    <button id="ending-new" type="button">再来一局</button>
+  </div>
+</div>
+<div id="toast" class="toast" hidden></div>
+</body>
+</html>

@@ -111,6 +111,8 @@ KB 分层：
 | `engine.rkt` | 游戏状态、合法动作、规则策略、压力、遗忘、视图组装 |
 | `text.rkt` | token → 中文台词模板 |
 | `main.rkt` | 终端菜单。`racket main.rkt [--debug] [--seed N]` |
+| `server.rkt` | web 服务：最小 HTTP/1.1 + JSON API + 静态文件。`racket server.rkt [--port 8080] [--https --cert F --key F]`，见「web 服务」 |
+| `static/` | 浏览器界面（`index.html`、`style.css`、`app.js`，无构建步骤） |
 | `test.rkt` | `raco test test.rkt` |
 | `gen.rkt` | 程序化案件生成。`racket gen.rkt --seed N --npcs 5 --slots 4 --layers 3 --secrets 1 --out f.rktd` |
 | `solve.rkt` | 可解性检查器。`racket solve.rkt f.rktd` |
@@ -272,3 +274,123 @@ think-v2 的其他结果：
 - 谎言来自预先编写的掩护层和单个时间槽的临场编造；编造只能整槽、单地点
 - 只有一种事件类型 `at`
 - 人物移动不考虑路程时间
+
+## web 服务（2026-11-25）
+
+浏览器界面替代 `main.rkt` 的终端菜单。`server.rkt` 只调用 `engine.rkt` / `kb.rkt` / `text.rkt` 的现有接口，不含规则；引擎未改动。
+
+```sh
+racket server.rkt --port 8080                                   # http://127.0.0.1:8080/
+racket server.rkt --port 8443 --https --cert cert.pem --key key.pem
+racket server.rkt --host 0.0.0.0 --port 8080                    # 默认只监听 127.0.0.1
+```
+
+### 结构
+
+| 层 | 内容 |
+|---|---|
+| HTTP/1.1 | 自写，只依赖 `racket/tcp`、`openssl`、`json`（本机 racket 是最小安装，没有 `web-server-lib`；决定不下载）。每个请求后关闭连接（`Connection: close`），不支持 keep-alive 和 `Transfer-Encoding`（返回 501） |
+| TLS | `--https` 时每个连接经 `ports->ssl-ports` 握手（`ssl-make-server-context 'auto`），握手在连接线程里做，受连接超时约束 |
+| 静态文件 | `static/` 下的文件；`/` 映射到 `index.html` |
+| API | `/api/…`，JSON 进出；POST 要求 `Content-Type: application/json`（跨站的简单表单 POST 发不出这个类型，浏览器会先发预检，服务端不回 CORS 头） |
+| 会话 | 内存中的 `id → 对局`，id 是 16 字节随机数的十六进制；每局一把锁，同一局的动作串行 |
+
+### API
+
+| 方法与路径 | 请求体 | 返回 |
+|---|---|---|
+| `GET /api/cases` | — | `[{file title npcs ap_budget}]`，即 `case-manor.rktd` 与 `cases/*.rktd` |
+| `POST /api/games` | `{case?, seed?, ext?}` | 局面（201） |
+| `GET /api/games/<id>` | — | 局面 |
+| `POST /api/games/<id>/ask` | `{npc, subject, slot}`，slot 为时间段下标或 `"rel"` | `{response, state}` |
+| `POST /api/games/<id>/present` | `{npc, item}`，item 为证物 id（字符串）或已获得的声明 id（整数） | `{response, state}` |
+| `POST /api/games/<id>/accuse` | `{npc}` | `{response, state}` |
+
+字段名一律 snake_case。接口按「说话分层」预留（引擎未改）：
+
+- 局面：`title briefing status ap_used ap_budget costs phase phase_ap npcs slots evidence claims exposed evaded log`。
+  - 行动点：`ap_used` 现在等于 `game-turn`，`ap_budget` 等于 `turn-limit`，`phase_ap` 等于 `phase-turn`；`costs` 为 `{ask, present, accuse}`，现在全为 1（`server.rkt` 的 `ACTION-COSTS`），与引擎每个动作回合数加 1 一致。引擎实现 §2 的行动点与倍率后，这几个字段改为从引擎读取，字段名不变。
+  - `claims` 每项：`{id step speaker speaker_name kind clause text note}`；`evidence` 每项带 `clause`。
+  - `log` 每项：`{step action cost ap_used npc npc_name question response}`。
+- NPC 回答 `response`：`{kind text clauses cost claim_ids}`。`text` 由 `text.rkt` 生成；`clauses` 是声明层子句的字符串列表，写法按 §3，时间为 HHMM。
+  - 现在由引擎的命题转换：`(at 谁 地点 起 止)`、`(not-at …)`、`(rel 谁 关系)`、`(no-rel 谁 关系)`。
+  - 回答类别对应：`unknown` / `evade` → `(dunno)`；`refuse` → `(refuse)`；`none`（"没什么瓜葛"）→ 对四种关系各一条 `(no-rel 自己 关系)`；`retract` / `withdraw` → 先列 `(retract 声明编号)`（这次动作中从该 NPC 承诺里撤下的声明，由动作前后的 `game-commits` 求差得到），再列新说法。`insist / no-effect / already / insufficient / wrong` 没有子句。
+  - 模糊命题（`approx`）写成 `(approx <子句>)`，见 §3 子句表的「修饰」行。
+- 玩家输入只有菜单（提问 / 出示 / 指认），不做自由输入框。
+
+文本全部由 `text.rkt` 生成（`response->text`、`claim->note`、`evidence->note`、`conflict->note`）。`subject` 的取值与 `main.rkt` 一致，限于 NPC。界面右栏有"显示声明层子句"开关（调试用，默认关）。
+
+隐藏信息：引擎的回答类别 `cover / truth / partial / fabricate / frame` 表明 NPC 是否在说谎，API 一律报 `answer`；声明类别只公开 `retract / slip / confess`，其余报 `said`。这与终端界面一致（`text.rkt` 对这几类用同一个模板）。
+
+错误：`{error: 文本}`，状态码 400（参数）、404（案件 / 对局 / 文件不存在）、405、409（对局已结束）、413、415、431、500、501。
+
+### 上限
+
+| 项 | 值 |
+|---|---|
+| 请求行、单个头部行 | 8192 字节（超过 431） |
+| 头部行数 | 100 |
+| 请求体 | 65536 字节（超过 413） |
+| 单个连接（含 TLS 握手与读请求） | 30 秒，超时关闭 |
+| 同时处理的连接 | 256（满了以后不再 accept） |
+| 内存中的对局 | 1000，超过时淘汰最久未访问的 |
+
+静态文件路径：URL 解码后按 `/` 切段，任何以 `.` 开头（含 `..`）或含 `\`、NUL 的段返回 404；拼出的路径经 `simplify-path` 后必须仍在 `static/` 下。案件只接受 `/api/cases` 列出的文件名。
+
+### HTTP/2、HTTP/3（QUIC）、HTTPS：交给反向代理
+
+Racket 侧不支持：本机 racket 9.3.13 没有任何 HTTP/2、HTTP/3 实现；racket 树（`v9.3-dev`，9.3.23）有 QUIC 传输层 `net/quic` 和 TLS 1.3 库 `rkttls`，但没有 HPACK / HTTP/2、QPACK / HTTP/3（`net/quic/README.md` 中列为阶段 2、3，未开工）。因此对外的 h2 / h3 由代理终结，代理经本机回环用 HTTP/1.1 转给 `server.rkt`。后端每个请求关闭连接，代理对每个请求新建一条回环 TCP 连接（推断开销在亚毫秒级，未测）。
+
+用代理时 `server.rkt` 不开 `--https`，只监听 127.0.0.1。以下配置未在本机实测（本机没有安装 caddy / nginx）。浏览器要能用 h3，UDP 443 必须放行。
+
+Caddy（2.6 起默认开启 h1 / h2 / h3，自动申请证书）：
+
+```caddyfile
+{
+	servers {
+		protocols h1 h2 h3
+	}
+}
+
+game.example.com {
+	encode zstd gzip
+	request_body {
+		max_size 64KB
+	}
+	reverse_proxy 127.0.0.1:8080
+}
+```
+
+nginx（1.25.1 起，需带 `--with-http_v3_module` 编译）：
+
+```nginx
+server {
+    listen 443 ssl;
+    listen 443 quic reuseport;
+    http2 on;
+    http3 on;
+    server_name game.example.com;
+
+    ssl_certificate     /etc/ssl/game.example.com/fullchain.pem;
+    ssl_certificate_key /etc/ssl/game.example.com/privkey.pem;
+    ssl_protocols TLSv1.3;
+
+    add_header Alt-Svc 'h3=":443"; ma=86400' always;   # 告诉浏览器可以改用 h3
+    client_max_body_size 64k;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_read_timeout 30s;
+    }
+}
+```
+
+KCP：浏览器不支持；只用于机器之间的隧道（如 kcptun 承载代理到后端的 TCP），对 `server.rkt` 透明，不需要改动。
+
+### 验证（2026-11-25）
+
+- `racket test.rkt` 通过（rackunit 无失败输出，退出码 0）。
+- curl 走完庄园案（种子 1）：问管家 → 问厨师 → 出示厨师的声明 → 问园丁 → 出示烟头 → 问园丁关于管家 → 出示园丁的声明 → 指认管家，用 8 行动点破案；结束后再提问返回 409。HTTP 与 `--https`（自签证书，TLSv1.3）各走一遍。
+- 边界：`..` / `%2e%2e` / `..%2f` / 隐藏文件 → 404，非 JSON POST → 415，坏 JSON → 400，65 KB 以上请求体 → 413，chunked → 501，9000 字节头部行 → 431，空闲连接 30 秒后关闭。
