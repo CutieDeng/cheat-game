@@ -1,6 +1,6 @@
 #lang racket/base
 ;; raco test test.rkt
-(require rackunit racket/list "kb.rkt" "engine.rkt" "gen.rkt" "solve.rkt" "gen-net.rkt" "net.rkt")
+(require rackunit racket/list "kb.rkt" "engine.rkt" "gen.rkt" "solve.rkt" "gen-net.rkt" "net.rkt" "rollout.rkt")
 
 (define cd (load-case "case-manor.rktd"))
 (define (P pol a l f t) (prop pol (st a l (hhmm->min f) (hhmm->min t)) 'exact))
@@ -76,6 +76,17 @@
   (define r (ask! g 'E1 'E3 S1))
   (check-eq? (response-kind r) 'truth)
   (check-equal? (props r) (list (P 'pos 'E3 'L3 2000 2005))))
+
+(test-case "只靠重复提问不会说漏嘴：第 5 次起压力为负且递增"
+  (define g (new-game cd #:seed 7))
+  (define ps
+    (for/list ([i 8])
+      (define k (response-kind (ask! g 'E1 'E1 S1)))
+      (check-not-eq? k 'slip)
+      (hash-ref (game-p-npc g) 'E1 0)))
+  ;; 第 2–4 次各 +5，第 5 次 -5，第 6 次 -10（截到 0）
+  (check-equal? (take ps 6) '(0 5 10 15 10 0))
+  (check-equal? (game-forget-log g) '()))
 
 (test-case "备选线：反复追问导致掩护层被遗忘、说漏嘴"
   (define g (new-game cd #:seed 7))
@@ -197,7 +208,7 @@
 
 (test-case "扩展动作默认关闭"
   (define g (new-game cd))
-  (check-equal? (map action-kind (legal-answers g 'E1 'E1 S1)) '(cover truth unknown)))
+  (check-equal? (map action-kind (legal-answers g 'E1 'E1 S1)) '(cover truth evade)))
 
 (test-case "扩展动作：撒谎者可编造自己或别人的行踪，诚实者不能"
   (define g (new-game cd #:ext? #t))
@@ -313,3 +324,83 @@
     (define r (rl C (car (hash-ref (case-data-rel-cover c) C))))
     (check-true (or (for/or ([k (case-data-knowledge c)]) (equal? (prop-st (kitem-prop k)) r))
                     (for/or ([e (case-data-evidence c)]) (equal? (prop-st (third e)) r))))))
+
+;; ---------------------------------------------------------------- 回放评估
+
+(test-case "回放评估：管家第一次被问案发时段，自认现场的真话价值最低"
+  (define opts (legal-answers (new-game cd) 'E1 'E1 S1))
+  (define vs (evaluate-options cd 1 #f (list (list 'ask 'E1 'E1 S1)) '() 0 opts 'E1 #:heuristic-seeds 4))
+  (define q (for/hasheq ([a opts] [v vs]) (values (action-kind a) (hash-ref v 'q))))
+  (printf "管家各选项价值：~s\n" q)
+  (check-true (< (hash-ref q 'truth) 0.2))
+  (check-true (< (hash-ref q 'truth) (hash-ref q 'cover)))
+  (check-true (< (hash-ref q 'truth) (hash-ref q 'evade))))
+
+(test-case "回放评估：重放能复现之前的 NPC 决策；说真话的人价值为 #f"
+  (define g (new-game cd))
+  (define r (ask! g 'E2 'E1 S1))
+  (define a (findf (λ (x) (eq? (action-kind x) 'truth)) (legal-answers (new-game cd) 'E2 'E1 S1)))
+  (define vs (evaluate-options cd 1 #f (list (list 'ask 'E2 'E1 S1)) '() 0 (list a) 'E2 #:heuristic-seeds 2))
+  (check-false (hash-ref (car vs) 'q))
+  (define-values (g2 ps) (replay cd 1 #f (list (list 'ask 'E2 'E1 S1) (list 'ask 'E1 'E1 S1)) (list a) 1
+                                 (findf (λ (x) (eq? (action-kind x) 'cover)) (legal-answers (new-game cd) 'E1 'E1 S1))))
+  (check-equal? (map claim-prop (game-claims g2)) (cons (P 'pos 'E1 'L2 2000 2030) (reverse (map claim-prop (response-claims r))))))
+
+;; ---------------------------------------------------------------- 回避的代价
+
+(test-case "回避：问自己行踪时说不清楚有压力代价，连续回避第 3 次提问时说漏嘴"
+  (define (evader view actions)
+    (or (findf (λ (a) (eq? (action-kind a) 'evade)) actions) (car actions)))
+  (define g (new-game cd #:policy evader))
+  (check-eq? (response-kind (ask! g 'E1 'E1 S1)) 'evade)
+  (check-equal? (hash-ref (game-p-topic g) (list 'E1 'E1 S1)) P-EVADE-TOPIC)
+  (check-eq? (response-kind (ask! g 'E1 'E1 S1)) 'evade)
+  (check-eq? (response-kind (ask! g 'E1 'E1 S1)) 'slip)
+  ;; 说漏嘴说出了案发时在书房，可直接定罪
+  (check-true (admitted? g 'E1)))
+
+(test-case "回避：问别人时说不清楚没有代价"
+  (define g (new-game cd))
+  (check-eq? (response-kind (ask! g 'E3 'E1 S1)) 'unknown)
+  (check-equal? (hash-ref (game-p-npc g) 'E3 0) 0))
+
+(test-case "关系：有要隐瞒的关系时不能用「没什么瓜葛」模糊否认"
+  (define g (new-game cd-rel))
+  (check-false (memq 'none (map action-kind (legal-answers g 'E1 'E1 'rel))))
+  (check-not-false (memq 'none (map action-kind (legal-answers g 'E2 'E2 'rel)))))
+
+(test-case "对抗可解性：规则 NPC 能破、对抗 NPC 只靠证据破不了的案件，开启检查后被拒绝"
+  ;; gen 5/4/3/1 种子 1..50 中，至少有一个案件 strict 失败但 press 成功；generate-case* 第 1 次尝试与 generate-case 相同
+  (define hit
+    (for/first ([s (in-range 1 51)]
+                #:when (let ([cd (datum->case (generate-case s #:npcs 5 #:slots 4 #:layers 3 #:secrets 1))])
+                         (and (not (eq? 'won (hash-ref (adversarial-solve cd #:press? #f) 'status)))
+                              (eq? 'won (hash-ref (adversarial-solve cd #:press? #t) 'status)))))
+      s))
+  (check-true (and hit #t))
+  (define-values (d1 a1) (generate-case* hit #:npcs 5 #:slots 4 #:layers 3 #:secrets 1 #:adversarial 'press))
+  (check-equal? a1 1)
+  (check-equal? d1 (generate-case hit #:npcs 5 #:slots 4 #:layers 3 #:secrets 1))
+  (define-values (d2 a2) (generate-case* hit #:npcs 5 #:slots 4 #:layers 3 #:secrets 1 #:adversarial 'strict))
+  (check-true (> a2 1))
+  (check-eq? 'won (hash-ref (adversarial-solve (datum->case d2) #:press? #f) 'status)))
+
+(test-case "行动点：按动作种类计费，付不起的动作报错，只剩指认时仍可指认"
+  ;; 预算 4，提问 1、出示 2、指认 0
+  (define g (new-game cd #:budget 4))
+  (ask! g 'E1 'E1 S1)
+  (check-equal? (game-ap g) 1)
+  (present! g 'E1 (first (first (case-data-evidence cd))))
+  (check-equal? (game-ap g) 3)
+  (check-eq? (phase g) 'confront)          ; 对质阶段从 floor(2/3 × 4) = 2 点开始
+  (check-exn exn:fail? (λ () (present! g 'E1 (first (first (case-data-evidence cd))))))
+  (ask! g 'E1 'E1 S1)
+  (check-eq? (game-status g) 'accuse-only)
+  (check-exn exn:fail? (λ () (ask! g 'E1 'E1 S1)))
+  (accuse! g 'E2)
+  (check-eq? (game-status g) 'lost)
+  (check-equal? (game-ap g) 4)
+  ;; 指认也要付费（按轮计数）且付不起时直接失败
+  (define g2 (new-game cd #:costs UNIT-COSTS #:budget 1))
+  (ask! g2 'E1 'E1 S1)
+  (check-eq? (game-status g2) 'lost))

@@ -1,5 +1,9 @@
 #lang racket/base
-;; 思考格式可行性测试（v3：扩展动作空间 + 生成案件）。在有实质选择的决策点上运行
+;; 思考格式可行性测试（v4：扩展动作空间 + 生成案件 + 回放评估）。在有实质选择的决策点上运行
+;;   决策 A ：给局势 + 分析（对局按 A 的选择继续）
+;;   决策 A'：只给分析和选项，不给局势（决策在结构上只能依据分析）
+;;   决策 B ：给局势，不给分析（对照）
+;;   回放评估：对每个选项用 rollout.rkt 估计价值，算出各组选择的遗憾值（最优价值 − 所选价值）
 ;;   思考任务（解析失败时重试 1 次）
 ;;   决策 A：给思考任务的输出（对局按 A 的选择继续）
 ;;   决策 B：不给分析（对照组）
@@ -7,7 +11,7 @@
 ;; 有实质选择 = 存在暴露选项，或者选项多于 2 个。
 ;; racket think-eval.rkt [--max N] [--games G] [--per-game K] [--gen "npcs slots layers secrets"] [--out 文件]
 (require racket/list racket/match racket/cmdline racket/format racket/string
-         "kb.rkt" "engine.rkt" "llm.rkt" "think.rkt" "eval.rkt" "gen.rkt")
+         "kb.rkt" "engine.rkt" "llm.rkt" "think.rkt" "eval.rkt" "gen.rkt" "rollout.rkt")
 
 (define (admission? cd a)
   (define c (case-data-crime cd))
@@ -36,7 +40,7 @@
           'refutable (and a (action-refutable? a)) 'admission (and a (admission? cd a))
           'ms (hash-ref d 'ms) 'tokens (hash-ref d 'tokens) 'output (hash-ref d 'output)))
 
-(define (think-path cd g view actions rng seed)
+(define (think-path cd g view actions rng seed moves npc-log)
   (define order1 (shuffle/rng rng actions))
   (define t (think-task cd view order1))
   (define th (hash-ref t 'thought))
@@ -44,6 +48,10 @@
   (define order3 (shuffle/rng rng actions))
   (define dA (decide-task cd view order2 (if th (thought->text cd th order1 order2) "（无）")))
   (define dB (decide-task cd view order3 #f))
+  (define order4 (shuffle/rng rng actions))
+  (define dAp (decide-task cd view order4 (if th (thought->text cd th order1 order4) "（无）") #:with-view? #f))
+  (define npc (car (cdr (assq 'self (cdr view)))))
+  (define vals (evaluate-options cd seed #t moves npc-log (length npc-log) actions npc))
   ;; 风险标注按原始 actions 的下标记录（同一种类可能有多个编造选项）
   (define risk-of
     (if th
@@ -68,6 +76,10 @@
           'risk risk-of
           'predict (and th (hash-ref th 'predict)) 'plan (and th (hash-ref th 'plan))
           'A (decision-info cd actions dA order2) 'B (decision-info cd actions dB order3)
+          'Ap (decision-info cd actions dAp order4)
+          'values (map (λ (v) (hash-ref v 'q)) vals)
+          'values-heuristic (map (λ (v) (hash-ref v 'heuristic)) vals)
+          'values-oracle (map (λ (v) (hash-ref v 'oracle)) vals)
           'think-ms (hash-ref t 'ms) 'think-tokens (hash-ref t 'tokens)
           'think-outputs (hash-ref t 'outputs) 'think-prompt (hash-ref t 'prompt)))
 
@@ -78,26 +90,38 @@
     (define cd (case-for seed))
     (define in-game 0)
     (define gbox (box #f))
+    (define moves '())
+    (define npc-log '())
     (define fast (make-llm-policy cd #:seed seed))
     (define rng (let ([r (make-pseudo-random-generator)])
                   (parameterize ([current-pseudo-random-generator r]) (random-seed (+ 1000 seed))) r))
     (define (policy view actions)
+      (define chosen (policy* view actions))
+      (set! npc-log (append npc-log (list chosen)))
+      chosen)
+    (define (policy* view actions)
       (cond
         [(and (or (findf action-exposing? actions) (> (length actions) 2))
               (< (length records) max-n) (< in-game per-game))
          (set! in-game (add1 in-game))
-         (define rec (think-path cd (unbox gbox) view actions rng seed))
+         (define rec (think-path cd (unbox gbox) view actions rng seed moves npc-log))
          (set! records (cons rec records))
          (write rec o) (newline o) (flush-output o)
          (define A (hash-ref rec 'A))
          (define B (hash-ref rec 'B))
-         (define (tag d) (string-append (if (hash-ref d 'exposing) "（暴露）" "") (if (hash-ref d 'refutable) "（可拆穿）" "")))
-         (printf "[~a] 局~a 第~a轮 ~a ~a个选项 解析~a~a secret~a/threat~a(侦探已知~a) A选~a~a B选~a~a 用时 ~a+~a+~a s\n"
+         (define Ap (hash-ref rec 'Ap))
+         (define vs (hash-ref rec 'values))
+         (define (tag d) (string-append (if (hash-ref d 'exposing) "（暴露）" "") (if (hash-ref d 'refutable) "（可拆穿）" "")
+                                        (let ([i (hash-ref d 'index)])
+                                          (if (and i (list-ref vs i)) (format "[~a]" (~r (list-ref vs i) #:precision 2)) ""))))
+         (printf "[~a] 局~a 第~a轮 ~a ~a个选项 最优价值~a 解析~a~a secret~a/threat~a(侦探已知~a) A选~a~a A'选~a~a B选~a~a 用时 ~a+~a+~a s\n"
                  (length records) seed (hash-ref rec 'turn) (hash-ref rec 'npc) (hash-ref rec 'n)
+                 (if (andmap values vs) (~r (apply max vs) #:precision 2) "n/a")
                  (if (hash-ref rec 'parse-ok) "成功" (format "失败:~a" (hash-ref rec 'error)))
                  (if (= 2 (hash-ref rec 'attempts)) (format "（重试，首次错误:~a）" (hash-ref rec 'first-error)) "")
                  (hash-ref rec 'secrets) (hash-ref rec 'threats) (hash-ref rec 'threats-known)
                  (hash-ref A 'kind) (tag A)
+                 (hash-ref Ap 'kind) (tag Ap)
                  (hash-ref B 'kind) (tag B)
                  (round (/ (hash-ref rec 'think-ms) 1000)) (round (/ (hash-ref A 'ms) 1000)) (round (/ (hash-ref B 'ms) 1000)))
          (flush-output)
@@ -111,7 +135,9 @@
                        0.2))
     (let loop ()
       (when (and (eq? (game-status g) 'playing) (< (length records) max-n))
-        (apply-move! g ps (player-move g ps))
+        (define mv (player-move g ps))
+        (set! moves (append moves (list mv)))
+        (apply-move! g ps mv)
         (loop))))
   (close-output-port o)
   (reverse records))
@@ -143,7 +169,7 @@
   (define n (length rs))
   (define ok (filter (λ (r) (hash-ref r 'parse-ok)) rs))
   (define first-ok (filter (λ (r) (and (hash-ref r 'parse-ok) (= 1 (hash-ref r 'attempts)))) rs))
-  (printf "\n== 思考格式可行性 v3：~a 个有实质选择的决策点 ==\n" n)
+  (printf "\n== 思考格式可行性 v4：~a 个有实质选择的决策点 ==\n" n)
   (printf "思考输出可解析：首次 ~a/~a（~a）；重试后 ~a/~a（~a）\n"
           (length first-ok) n (pct (length first-ok) n) (length ok) n (pct (length ok) n))
   (printf "首次解析错误：~s\n" (filter values (map (λ (r) (hash-ref r 'first-error)) rs)))
@@ -162,12 +188,38 @@
           (pct (count (λ (x) (eq? x 'high)) fab-ref-l) (length fab-ref-l)) (length fab-ref-l)
           (pct (count (λ (x) (eq? x 'low)) fab-safe-l) (length fab-safe-l)) (length fab-safe-l))
   (printf "选项数分布：~s\n" (sort (hash->list (for/fold ([h (hasheqv)]) ([r rs]) (hash-update h (hash-ref r 'n) add1 0))) < #:key car))
-  (define consistent
-    (for/list ([r ok])
+  (define (consistent key)
+    (for/list ([r ok] #:when (hash-ref (hash-ref r key) 'index))
       (define rk (hash-ref r 'risk))
-      (define lv (hash-ref rk (hash-ref (hash-ref r 'A) 'index) #f))
+      (define lv (hash-ref rk (hash-ref (hash-ref r key) 'index) #f))
       (or (eq? lv 'low) (not (for/or ([(k v) rk]) (eq? v 'low))))))
-  (printf "决策 A 与自己的风险标注一致：~a\n" (pct (count values consistent) (length consistent)))
+  (printf "与风险标注一致：A ~a；A' ~a\n"
+          (pct (count values (consistent 'A)) (length (consistent 'A)))
+          (pct (count values (consistent 'Ap)) (length (consistent 'Ap))))
+  (printf "A 与 A' 选择相同：~a\n" (pct (count (λ (r) (eqv? (hash-ref (hash-ref r 'A) 'index) (hash-ref (hash-ref r 'Ap) 'index))) rs) n))
+  ;; 回放评估
+  (define valued (filter (λ (r) (andmap values (hash-ref r 'values))) rs))
+  (define (regret r key)
+    (define i (hash-ref (hash-ref r key) 'index))
+    (and i (- (apply max (hash-ref r 'values)) (list-ref (hash-ref r 'values) i))))
+  (printf "回放评估：~a 个决策点有价值（撒谎者）\n" (length valued))
+  (for ([key '(A Ap B)] [label '("A" "A'" "B")])
+    (define gs (filter values (map (λ (r) (regret r key)) valued)))
+    (printf "  ~a：平均遗憾 ~a；选中最优 ~a；遗憾 > 0.05 的 ~a\n" label
+            (if (null? gs) "n/a" (~r (/ (apply + gs) (length gs)) #:precision 3))
+            (pct (count (λ (x) (< x 1e-9)) gs) (length gs))
+            (pct (count (λ (x) (> x 0.05)) gs) (length gs))))
+  (define spread (map (λ (r) (- (apply max (hash-ref r 'values)) (apply min (hash-ref r 'values)))) valued))
+  (printf "  选项价值极差：均值 ~a；> 0.05 的决策点 ~a\n"
+          (if (null? spread) "n/a" (~r (/ (apply + spread) (length spread)) #:precision 3))
+          (pct (count (λ (x) (> x 0.05)) spread) (length spread)))
+  (printf "  effort 标签（B 的遗憾 > 0.05 记为高）：高 ~a\n"
+          (pct (count (λ (r) (let ([x (regret r 'B)]) (and x (> x 0.05)))) valued) (length valued)))
+  (printf "  最优选项的种类：~s\n"
+          (sort (hash->list (for/fold ([h (hasheq)]) ([r valued])
+                              (define vs (hash-ref r 'values))
+                              (hash-update h (list-ref (hash-ref r 'kinds) (index-of vs (apply max vs))) add1 0)))
+                > #:key cdr))
   (printf "A 与 B 选择相同：~a\n" (pct (count (λ (r) (eqv? (hash-ref (hash-ref r 'A) 'index) (hash-ref (hash-ref r 'B) 'index))) rs) n))
   (printf "plan 分布：~s\n" (sort (hash->list (for/fold ([h (hash)]) ([r ok]) (hash-update h (let ([p (hash-ref r 'plan)]) (if (pair? p) (car p) p)) add1 0))) > #:key cdr))
   (printf "predict 类型：~s\n" (sort (hash->list (for/fold ([h (hash)]) ([r ok]) (hash-update h (car (hash-ref r 'predict)) add1 0))) > #:key cdr))
@@ -175,12 +227,13 @@
           (round (/ (apply + (map (λ (r) (hash-ref r 'think-ms)) rs)) (max 1 n)))
           (round (/ (apply + (map (λ (r) (hash-ref r 'think-tokens)) rs)) (max 1 n))))
   (decision-summary "A（带分析）" rs 'A)
+  (decision-summary "A'（只给分析，不给局势）" rs 'Ap)
   (decision-summary "B（不带分析，对照）" rs 'B))
 
 (module+ main
   (define max-n (make-parameter 40))
   (define games (make-parameter 20))
-  (define out (make-parameter "runs/think-v3.rktd"))
+  (define out (make-parameter "runs/think-v4.rktd"))
   (define case-file (make-parameter "case-manor.rktd"))
   (define gen (make-parameter #f))
   (define per-game (make-parameter 1000))

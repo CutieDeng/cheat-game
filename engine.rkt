@@ -5,14 +5,32 @@
 
 ;; ---------------------------------------------------------------- 参数
 
-;; 回合上限按案件规模：(case-data-turn-limit cd)，缺省 max(30, 6 × NPC 数)
-;; 对质阶段从上限的 2/3 开始（30 轮时为第 20 轮，与之前相同）
+;; 行动点（AP）：每个玩家动作按种类消耗行动点，预算用完结束。
+;; 预算缺省为案件回合上限 (case-data-turn-limit cd)，缺省 max(30, 6 × NPC 数)；new-game 可用 #:budget 覆盖。
+;; 缺省费用 DEFAULT-COSTS：提问 1、出示 2、指认 0（2026-11-25 按 ap-v1 标定选定，见 design.md「行动点」）。
+;; UNIT-COSTS 全为 1：AP 等于轮数，与按轮计数的旧规则完全相同，用于和旧记录对照。
+;; 对质阶段从预算的 2/3 开始（30 点时为第 20 点）
+(define DEFAULT-COSTS (hasheq 'ask 1 'present 2 'accuse 0))
+(define UNIT-COSTS (hasheq 'ask 1 'present 1 'accuse 1))
+(define SPEC-COSTS DEFAULT-COSTS)
 (define PHASE-BONUS 20)
 (define FORGET-THRESHOLD 60)
 (define P-CONFLICT-NPC 25)
 (define P-CONFLICT-TOPIC 35)
 (define P-REPEAT-NPC 5)
 (define P-REPEAT-TOPIC 15)
+;; 同一问题第 REPEAT-FREE+2 次及以后再问：压力改为负值，且每多问一次负值增大。
+;; 第 2–4 次提问仍按上面的正值计（保留"连续回避第 3 次说漏嘴"和"被拆穿一次后再问 3 次说漏嘴"）；
+;; 没有冲突或回避时，只靠重复提问最高到强度 30（对质阶段 50），达不到遗忘阈值；第 5 次起还会降低该 NPC 的总压力。
+(define REPEAT-FREE 3)
+(define (repeat-deltas r)   ; r = 此前已问过的次数（≥1）
+  (if (<= r REPEAT-FREE)
+      (values P-REPEAT-NPC P-REPEAT-TOPIC)
+      (values (* (- P-REPEAT-NPC) (- r REPEAT-FREE)) (* (- P-REPEAT-TOPIC) (- r REPEAT-FREE)))))
+;; 问到自己的行踪却回避（evade）：不形成承诺、无从拆穿，但侦探会更起疑。
+;; 同一话题连续回避时，第 3 次提问的强度达到遗忘阈值，掩护说法被遗忘，只能说漏嘴。
+(define P-EVADE-NPC 15)
+(define P-EVADE-TOPIC 30)
 (define P-NO-EFFECT -10)
 (define VIEW-K 8)
 (define VIEW-RECENT 6)
@@ -34,6 +52,9 @@
 
 (struct game (cd rng
               [turn #:mutable] [claims #:mutable] [next-id #:mutable]
+              [ap #:mutable]   ; 已用行动点
+              costs            ; 动作种类 -> 行动点
+              budget           ; 行动点预算
               commits          ; npc -> (listof claim)，当前仍坚持的声明
               layer            ; npc -> 当前掩护层下标；= 层数 时表示已回到真相
               p-npc            ; npc -> 压力
@@ -43,18 +64,19 @@
               degraded         ; 观察 id -> #t
               processed        ; (list npc 主体 时间槽) -> #t，已做过遗忘判定
               [exposed #:mutable]
-              [history #:mutable]     ; 新的在前：(list turn npc q kind props)
-              [status #:mutable]      ; playing won lost
+              [history #:mutable]     ; 新的在前：(list 动作后已用AP npc q kind props)
+              [status #:mutable]      ; playing accuse-only won lost；accuse-only：只剩指认可做
               [view-sizes #:mutable]  ; 新的在前
               [forget-log #:mutable]  ; 新的在前
               policy
               ext?))          ; #t：开启扩展动作（partial / fabricate / frame / withdraw）
 
-(define (new-game cd #:seed [seed 1] #:policy [policy rule-policy] #:ext? [ext? #f])
+(define (new-game cd #:seed [seed 1] #:policy [policy rule-policy] #:ext? [ext? #f]
+                  #:costs [costs DEFAULT-COSTS] #:budget [budget (case-data-turn-limit cd)])
   (define rng (make-pseudo-random-generator))
   (parameterize ([current-pseudo-random-generator rng]) (random-seed seed))
   (define npcs (case-data-npcs cd))
-  (game cd rng 0 '() 1
+  (game cd rng 0 '() 1 0 costs budget
         (make-hasheq (for/list ([n npcs]) (cons n '())))
         (make-hasheq (for/list ([n npcs]) (cons n 0)))
         (make-hasheq) (make-hash) (make-hash) (make-hash) (make-hash) (make-hash)
@@ -63,9 +85,14 @@
 ;; ---------------------------------------------------------------- 压力与强度
 
 (define (hadd! h k delta) (hash-set! h k (max 0 (+ (hash-ref h k 0) delta))))
-(define (turn-limit g) (case-data-turn-limit (game-cd g)))
-(define (phase-turn g) (quotient (* 2 (turn-limit g)) 3))
-(define (phase g) (if (>= (game-turn g) (phase-turn g)) 'confront 'normal))
+;; turn-limit / phase-turn 保留原名，单位已是行动点
+(define (turn-limit g) (game-budget g))
+(define (phase-turn g) (floor (* 2/3 (game-budget g))))
+(define (phase g) (if (>= (game-ap g) (phase-turn g)) 'confront 'normal))
+(define (cost g kind) (hash-ref (game-costs g) kind))
+(define (ap-left g) (- (game-budget g) (game-ap g)))
+(define (affordable? g kind) (<= (cost g kind) (ap-left g)))
+(define (active? g) (and (memq (game-status g) '(playing accuse-only)) #t))
 (define (intensity g npc subj slot)
   (min 100 (+ (* 1/2 (hash-ref (game-p-npc g) npc 0))
               (* 1/2 (hash-ref (game-p-topic g) (list npc subj slot) 0))
@@ -180,9 +207,10 @@
                    #:when (consistent? g npc (list p)))
          (act 'frame (list p) #f (refutable? g npc p)))
        '())
-   ;; 问自己：没有能说的就说"没什么瓜葛"（不形成承诺）；问别人：说不清楚
+   ;; 问自己：确实没有关系才能说"没什么瓜葛"（不形成承诺）；有要隐瞒的关系就只能否认或说出。
+   ;; 问别人：说不清楚
    (if self?
-       (if (null? safe) (list (act 'none '() #f)) '())
+       (if (and (null? safe) (null? hidden)) (list (act 'none '() #f)) '())
        (list (act 'unknown '() #f)))))
 
 (define (legal-at-answers g npc subj slot)
@@ -234,7 +262,8 @@
               (act (if self? 'fabricate 'frame) (list p) #f (refutable? g npc p)))
             '()))
        '())
-   (list (act 'unknown '() #f)))))
+   ;; 问自己行踪时说不清楚 = 回避，有压力代价；问别人时说不清楚没有代价
+   (list (act (if self? 'evade 'unknown) '() #f)))))
 
 (define (legal-reactions g npc found)
   (define cd (game-cd g))
@@ -257,7 +286,7 @@
 ;; ---------------------------------------------------------------- 规则策略
 
 ;; 策略接口：(policy view actions) -> action，只能从 actions 中选
-(define PRIORITY '(slip cover truth none unknown insist retract withdraw refuse))
+(define PRIORITY '(slip cover truth none unknown evade insist retract withdraw refuse))
 (define (rule-policy view actions)
   (define ok (filter (λ (a) (not (and (eq? (action-kind a) 'truth) (action-exposing? a))))
                      actions))
@@ -309,11 +338,11 @@
       [(pair? cover-cands)
        (define c (pick-max g cover-cands))
        (hash-set! (game-forgotten g) (car c) #t)
-       (set-game-forget-log! g (cons (list (game-turn g) 'forget npc (car c)) (game-forget-log g)))]
+       (set-game-forget-log! g (cons (list (game-ap g) 'forget npc (car c)) (game-forget-log g)))]
       [(pair? obs-cands)
        (define k (pick-max g obs-cands))
        (hash-set! (game-degraded g) (kitem-id k) #t)
-       (set-game-forget-log! g (cons (list (game-turn g) 'degrade npc (kitem-id k)) (game-forget-log g)))])))
+       (set-game-forget-log! g (cons (list (game-ap g) 'degrade npc (kitem-id k)) (game-forget-log g)))])))
 
 ;; ---------------------------------------------------------------- 内部操作
 
@@ -338,14 +367,20 @@
       (list (claim-prop (find-claim g item)))))
 
 (define (push-history! g npc q kind props)
-  (set-game-history! g (cons (list (game-turn g) npc q kind props) (game-history g))))
+  (set-game-history! g (cons (list (game-ap g) npc q kind props) (game-history g))))
 
-(define (start-turn! g)
-  (unless (eq? (game-status g) 'playing) (error 'engine "游戏已结束"))
-  (set-game-turn! g (add1 (game-turn g))))
+(define (start-turn! g kind)
+  (unless (or (eq? (game-status g) 'playing)
+              (and (eq? kind 'accuse) (eq? (game-status g) 'accuse-only)))
+    (error 'engine "游戏已结束"))
+  (unless (affordable? g kind) (error 'engine "行动点不足：~a 需要 ~a，剩 ~a" kind (cost g kind) (ap-left g)))
+  (set-game-turn! g (add1 (game-turn g)))
+  (set-game-ap! g (+ (game-ap g) (cost g kind))))
+;; 提问和出示都付不起时结束：指认仍付得起则只剩指认（accuse-only），否则失败
 (define (end-turn! g)
-  (when (and (eq? (game-status g) 'playing) (>= (game-turn g) (turn-limit g)))
-    (set-game-status! g 'lost)))
+  (when (and (eq? (game-status g) 'playing)
+             (not (affordable? g 'ask)) (not (affordable? g 'present)))
+    (set-game-status! g (if (affordable? g 'accuse) 'accuse-only 'lost))))
 
 ;; 冲突带来的话题压力，并做遗忘判定
 (define (press-conflicts! g npc found)
@@ -368,11 +403,13 @@
 ;; ---------------------------------------------------------------- 玩家动作
 
 (define (ask! g npc subj slot)
-  (start-turn! g)
+  (start-turn! g 'ask)
   (define key (list npc subj slot))
-  (when (> (hash-ref (game-asked g) key 0) 0)
-    (hadd! (game-p-npc g) npc P-REPEAT-NPC)
-    (hadd! (game-p-topic g) key P-REPEAT-TOPIC))
+  (define r (hash-ref (game-asked g) key 0))
+  (when (> r 0)
+    (define-values (dn dt) (repeat-deltas r))
+    (hadd! (game-p-npc g) npc dn)
+    (hadd! (game-p-topic g) key dt))
   (hash-update! (game-asked g) key add1 0)
   (maybe-forget! g npc subj slot)
   (define q (list 'ask subj slot))
@@ -381,7 +418,9 @@
   (define cs (for/list ([p (action-props a)]) (new-claim! g npc p (action-kind a))))
   (case (action-kind a)
     [(cover truth partial fabricate frame) (for ([c cs]) (commit! g npc c))]
-    [(slip) (register-slip! g npc cs)])
+    [(slip) (register-slip! g npc cs)]
+    [(evade) (hadd! (game-p-npc g) npc P-EVADE-NPC)
+             (hadd! (game-p-topic g) key P-EVADE-TOPIC)])
   (push-history! g npc q (action-kind a) (action-props a))
   (end-turn! g)
   (response (action-kind a) cs))
@@ -404,7 +443,7 @@
     (press-conflicts! g npc dedup)))
 
 (define (present! g npc item)
-  (start-turn! g)
+  (start-turn! g 'present)
   (define props (item-props g item))
   (define raw
     (for*/list ([o (hash-ref (game-commits g) npc)] [p props]
@@ -494,7 +533,7 @@
       (admitted? g npc)))
 
 (define (accuse! g npc)
-  (start-turn! g)
+  (start-turn! g 'accuse)
   (define cd (game-cd g))
   (define culprit (case-data-culprit cd))
   (define result
@@ -574,6 +613,15 @@
                        (map (λ (s) (prop->sexp (prop 'pos s 'exact))) layer)))
             (rels ,@(rels-of cd npc))
             (hide ,@(hash-ref (case-data-rel-cover cd) npc '()))
+            ;; 自己掌握的观察：(命题 观察时所在地点)；已模糊的记忆显示为 approx
+            (know ,@(for/list ([k (case-data-knowledge cd)] #:when (eq? (kitem-owner k) npc))
+                      (define p (kitem-prop k))
+                      (define p* (if (and (st? (prop-st p)) (hash-ref (game-degraded g) (kitem-id k) #f))
+                                     (prop (prop-pol p) (widen-to-slots cd (prop-st p)) 'approx)
+                                     p))
+                      (list (prop->sexp p*) (kitem-via k))))
+            ;; 视线（单向），同一地点总是互相看得见
+            (sight ,@(for/list ([v (case-data-views cd)]) (list (car v) (cdr v))))
             ,@(if (eq? role 'culprit)
                   `((crime ,(prop->sexp (prop 'pos (case-data-crime cd) 'exact))))
                   '()))

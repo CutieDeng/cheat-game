@@ -139,7 +139,11 @@
   (define prompt
     (string-append (render-view cd view)
                    "\n\n你可以这样回应：\n" (render-actions cd view order)
-                   "\n\n任务：先分析局势，这一步不要做选择。\n" (format-spec cd)))
+                   "\n\n任务：先分析局势，这一步不要做选择。\n"
+                   "要求：分析必须完整。之后的选择只依据这份分析做出，不会再看局势；分析里没写到的考虑，选择时就用不上。"
+                   "所以每个选项的风险都要写清楚，plan 要与风险标注一致：plan 要执行的那个选项应当是风险为 low 的选项之一（如果有的话）。"
+                   "完整是指每个子句都按格式填写，不是写长篇说明：输出里不要有任何自然语言句子，只输出一个 (think ...) s-expression。\n"
+                   (format-spec cd)))
   (define (try out) (with-handlers ([exn:fail:user? (λ (e) (values #f (exn-message e)))])
                       (values (parse-thought cd out (length order)) #f)))
   (define-values (out1 tok1 ms1) (chat-thinking (list (cons "user" prompt))))
@@ -156,13 +160,25 @@
              'ms (+ ms1 ms2) 'tokens (+ tok1 tok2) 'prompt prompt)]))
 
 ;; thought-text 为 #f 时不给分析（对照组）
-(define (decide-task cd view order thought-text)
+(define DECIDE-FROM-THOUGHT
+  (string-append
+   "\n\n你的选择必须只基于上面的分析，不要重新分析局势：\n"
+   "- 选择与 plan 一致的选项；\n"
+   "- 有风险为 low 的选项时，不要选风险为 high 的选项；\n"
+   "- 分析里没有给出理由支持的选项不要选。\n"
+   "只输出你选择的编号（一个数字），不要输出其他内容。"))
+
+;; thought-text 为 #f 时不给分析（对照组）。
+;; with-view? 为 #f 时只给分析和选项、不给局势（决策在结构上只能依据分析）
+(define (decide-task cd view order thought-text #:with-view? [with-view? #t])
   (define prompt
-    (string-append (render-view cd view)
+    (string-append (if (or with-view? (not thought-text))
+                       (render-view cd view)
+                       (format "你是推理游戏里的角色「~a」，正在接受侦探审讯。" (person-name cd (cadr (assq 'self (cdr view))))))
                    (if thought-text (string-append "\n\n你对局势的分析：\n" thought-text) "")
                    "\n\n你可以这样回应：\n" (render-actions cd view order)
                    (if thought-text
-                       "\n\n根据你的分析做出选择。只输出你选择的编号（一个数字），不要输出其他内容。"
+                       DECIDE-FROM-THOUGHT
                        "\n\n只输出你选择的编号（一个数字），不要输出其他内容。")))
   (define-values (out ctoks ms) (chat-thinking (list (cons "user" prompt))))
   (define m (regexp-match #px"[0-9]+" out))

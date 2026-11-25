@@ -6,7 +6,8 @@
 ;;   - 凶手的行踪至少有 2–3 个潜在目击者（走廊、窗户房间、返回时的走廊），多数是撒谎者
 ;;   - 其余 NPC 在案发前后随机外出，随机决定是否撒谎；观察由共处和视线推出，依赖关系随之形成
 ;;   - 关系：凶手有 1 条动机并否认；另有 1–2 人有动机（假动机），一半否认；知情人和文书证物提供来源
-;; 生成后用 net.rkt 的静态分析筛选：最小割 ≥ min-cut、深度 ≥ min-depth，且检查器能破案。
+;; 生成后用 net.rkt 的静态分析筛选：最小割 ≥ min-cut、深度 ≥ min-depth，且检查器能破案；
+;; 默认还要求对抗 NPC（会用不可拆穿的编造）下检查器能破案（#:adversarial 'press | 'strict | #f）。
 ;;
 ;; racket gen-net.rkt --seed N [--npcs 5] [--slots 4] [--layers 2] [--min-cut 2] [--min-depth 2] [--out 文件]
 (require racket/list racket/match racket/cmdline racket/pretty racket/string
@@ -252,13 +253,15 @@
       (evidence ,@(for/list ([ev evidence]) (list (first ev) (second ev) (sdatum (prop-st (third ev))))))
       (rels ,@(for/list ([r rels]) (list (rl-agent r) (rl-kind r))))
       (rel-cover ,@(for/list ([g (group-by car rel-cover)]) (cons (caar g) (map second g))))
+      (views ,@(for/list ([v views]) (list (car v) (cdr v))))
       (meta (seed ,seed) (npcs ,n) (slots ,S) (layers ,n-layers)
             (views ,@(for/list ([v views]) (list (car v) (cdr v))))
             (roles (culprit ,C) (coworker ,H) (witnesses ,@witnesses) (chain ,@chain-members) (liars ,@liars))))))
 
 ;; 按目标筛选：返回 (values datum 尝试次数 指标) 或在 attempts 次内失败返回 (values #f attempts #f)
 (define (generate-net-case* seed #:npcs [n 5] #:slots [S 4] #:layers [L 2]
-                            #:min-cut [mc 2] #:min-depth [md 0] #:attempts [attempts 200])
+                            #:min-cut [mc 2] #:min-depth [md 0] #:attempts [attempts 200]
+                            #:adversarial [adv 'press])
   (let loop ([a 0])
     (cond
       [(>= a attempts) (values #f attempts #f)]
@@ -269,8 +272,12 @@
        (define depth (chain-depth cd))
        (define cut (and ok (null? (validate-case cd)) (>= depth md) (min-cut cd)))
        (define o (and cut (>= cut mc) (oracle-solve cd)))
-       (if (and o (eq? (hash-ref o 'status) 'won))
+       ;; 对抗可解性：见 gen.rkt 的 generate-case*
+       (define av (and o (eq? (hash-ref o 'status) 'won) adv
+                       (adversarial-solve cd #:press? (eq? adv 'press))))
+       (if (and o (eq? (hash-ref o 'status) 'won) (or (not adv) (eq? 'won (hash-ref av 'status))))
            (values d (add1 a) (hasheq 'depth depth 'min-cut cut 'oracle-turns (hash-ref o 'turns)
+                                      'adversarial-turns (and av (hash-ref av 'turns))
                                       'sources (length (relevant-sources cd))))
            (loop (add1 a)))])))
 

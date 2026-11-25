@@ -68,13 +68,21 @@
   (cond
     [self-placed (list 'accuse self-placed)]
     [(>= (hash-ref (pstate-score ps) top 0) LIES-TO-WIN) (list 'accuse top)]
-    [(>= (add1 (game-turn g)) (turn-limit g)) (list 'accuse top)]
+    [(eq? (game-status g) 'accuse-only) (list 'accuse top)]
+    ;; 再问一次就付不起指认：现在指认
+    [(< (- (ap-left g) (cost g 'ask)) (cost g 'accuse)) (list 'accuse top)]
     [(< (random (pstate-rng ps)) (pstate-eps ps))
      ;; 探索：随机提问或随机出示
-     (if (or (null? (items g)) (zero? (random 2 (pstate-rng ps))))
+     (if (or (null? (items g)) (not (affordable? g 'present)) (zero? (random 2 (pstate-rng ps))))
          (cons 'ask (pick ps (all-topics g)))
          (list 'present (pick ps npcs) (car (pick ps (items g)))))]
-    [(pair? cands) (cons 'present (let ([c (pick ps cands)]) (list (car c) (cdr c))))]
+    [(and (pair? cands) (affordable? g 'present)) (cons 'present (let ([c (pick ps cands)]) (list (car c) (cdr c))))]
+    ;; 追问回避：有人说不清自己某时段在哪，且这个问题问过不到 3 次，就再问
+    [(for/first ([h (reverse (game-history g))]
+                 #:when (eq? (fourth h) 'evade)
+                 #:when (< (hash-ref (game-asked g) (list (second h) (second h) (third (third h))) 0) 3))
+       (list 'ask (second h) (second h) (third (third h))))
+     => values]
     [(pair? unasked)
      (define self-first (filter (λ (k) (eq? (first k) (second k))) unasked))
      (cons 'ask (pick ps (if (pair? self-first) self-first unasked)))]
@@ -116,9 +124,10 @@
                     (unbox decisions)))
     a))
 
-(define (run-game cd make-policy seed eps #:ext? [ext? #f])
+(define (run-game cd make-policy seed eps #:ext? [ext? #f] #:costs [costs DEFAULT-COSTS] #:budget [budget #f])
   (define decisions (box '()))
-  (define g (new-game cd #:seed seed #:ext? ext? #:policy (recording-policy (make-policy seed) decisions)))
+  (define g (new-game cd #:seed seed #:ext? ext? #:policy (recording-policy (make-policy seed) decisions)
+                      #:costs costs #:budget (or budget (case-data-turn-limit cd))))
   (define ps (pstate (make-hash) (make-hasheq) (let ([r (make-pseudo-random-generator)])
                                                  (parameterize ([current-pseudo-random-generator r])
                                                    (random-seed seed))
@@ -126,12 +135,12 @@
                      eps))
   (define moves
     (let loop ([acc '()])
-      (if (eq? (game-status g) 'playing)
+      (if (active? g)
           (let* ([mv (player-move g ps)] [r (apply-move! g ps mv)])
             (loop (cons (list mv (response-kind r)) acc)))
           (reverse acc))))
   (define culprit (case-data-culprit cd))
-  (hasheq 'seed seed 'status (game-status g) 'turns (game-turn g)
+  (hasheq 'seed seed 'status (game-status g) 'turns (game-turn g) 'ap (game-ap g)
           'lies (length (exposed-lies g culprit))
           'admitted (admitted? g culprit)
           'first-exposed (let ([cs (exposed-lies g culprit)])

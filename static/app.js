@@ -55,7 +55,7 @@ function setState(s) {
   localStorage.setItem(STORE_KEY, s.id);
   if (fresh || !s.npcs.some((n) => n.id === ui.target)) ui.target = s.npcs[0] && s.npcs[0].id;
   if (fresh || !s.npcs.some((n) => n.id === ui.subject)) ui.subject = ui.target;
-  if (s.status !== "playing") showEnding();
+  if (s.status === "won" || s.status === "lost") showEnding();
 }
 
 async function newGame() {
@@ -93,6 +93,8 @@ const npcName = (id) => {
   return n ? n.name : "—";
 };
 const playing = () => ui.state && ui.state.status === "playing" && !ui.busy;
+// 按引擎给的 can.{ask,present,accuse} 判断此刻付得起哪种动作（status 为 accuse-only 时只能指认）
+const can = (kind) => ui.state && ui.state.can && ui.state.can[kind] && !ui.busy;
 
 function el(tag, cls, text) {
   const e = document.createElement(tag);
@@ -117,6 +119,7 @@ function render() {
   $("briefing").textContent = s.briefing;
   $("turn").textContent = s.status === "playing"
     ? `行动点 ${s.ap_used} / ${s.ap_budget}`
+    : s.status === "accuse-only" ? `行动点用尽（${s.ap_used} / ${s.ap_budget}）· 只能指认`
     : `${s.status === "won" ? "已破案" : "已失败"} · 用了 ${s.ap_used} / ${s.ap_budget} 行动点`;
   $("phase").hidden = s.phase !== "confront";
 
@@ -132,7 +135,7 @@ function render() {
   // 左栏：证物与证词，每项可出示给当前对象
   const presentBtn = (item) => {
     const b = el("button", "", `向${target}出示 · ${s.costs.present} 点`);
-    b.disabled = !playing();
+    b.disabled = !can("present");
     b.title = `出示消耗 ${s.costs.present} 行动点`;
     b.addEventListener("click", (ev) => { ev.stopPropagation(); present(item); });
     return b;
@@ -172,13 +175,13 @@ function render() {
   const topics = s.slots.map((sl) => {
     const b = el("button", "topic", `${sl.label} 在哪`);
     b.title = `问${target}：${subj} ${sl.label} 在哪里？`;
-    b.disabled = !playing();
+    b.disabled = !can("ask");
     b.addEventListener("click", () => ask(sl.index));
     return b;
   });
   const rel = el("button", "topic", "和被害人的关系");
   rel.title = `问${target}：${subj}和被害人是什么关系？`;
-  rel.disabled = !playing();
+  rel.disabled = !can("ask");
   rel.addEventListener("click", () => ask("rel"));
   topics.push(rel);
   fill($("topic-choices"), topics, "");
@@ -200,7 +203,7 @@ function render() {
   const armed = ui.armed === ui.target;
   acc.textContent = armed ? `再点一次：确认指认${target}` : `指认${target}是凶手 · ${s.costs.accuse} 点`;
   acc.classList.toggle("armed", armed);
-  acc.disabled = !playing();
+  acc.disabled = !can("accuse");
 }
 
 let renderedLog = { id: null, n: -1 };

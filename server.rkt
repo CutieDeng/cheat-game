@@ -100,12 +100,11 @@
 ;; 字段名一律 snake_case。接口按 design.md「说话分层」预留：
 ;;   NPC 回答为 {kind text clauses cost}；局面用行动点 {ap_used ap_budget costs}。
 
-;; 每个动作的行动点消耗。引擎实现行动点（「说话分层」§2）之前一律按 1，与 game-turn 每个动作加 1 一致；
-;; 届时 ap_used / ap_budget / costs 改为从引擎读取。
-(define ACTION-COSTS (hasheq 'ask 1 'present 1 'accuse 1))
-(define (ap-used g) (game-turn g))
-(define (ap-budget g) (turn-limit g))
-(define (costs-json) (for/hasheq ([(k v) (in-hash ACTION-COSTS)]) (values k v)))
+;; 行动点从引擎读取（engine.rkt DEFAULT-COSTS：提问 1、出示 2、指认 0）。
+;; status 可能是 accuse-only：提问和出示都付不起，只能指认。
+(define (ap-used g) (game-ap g))
+(define (ap-budget g) (game-budget g))
+(define (costs-json g) (for/hasheq ([(k v) (in-hash (game-costs g))]) (values k v)))
 
 (define (slot-label cd i)
   (define-values (f t) (slot-range cd i))
@@ -157,7 +156,9 @@
    'id (sess-id s) 'case (sess-file s) 'seed (sess-seed s) 'ext (game-ext? g)
    'title (case-data-title cd) 'briefing (case-data-briefing cd)
    'status (symbol->string (game-status g))
-   'ap_used (ap-used g) 'ap_budget (ap-budget g) 'costs (costs-json)
+   'ap_used (ap-used g) 'ap_budget (ap-budget g) 'costs (costs-json g)
+   'can (for/hasheq ([k '(ask present accuse)])
+          (values k (and (active? g) (or (eq? k 'accuse) (eq? (game-status g) 'playing)) (affordable? g k))))
    'phase (symbol->string (phase g)) 'phase_ap (phase-turn g)
    'npcs (for/list ([n (case-data-npcs cd)])
            (hasheq 'id (symbol->string n) 'name (nm n)
@@ -224,7 +225,9 @@
 (define (do-action! s kind body)
   (define g (sess-g s))
   (define cd (game-cd g))
-  (unless (eq? (game-status g) 'playing) (fail 409 "这局已经结束（~a）" (game-status g)))
+  (unless (active? g) (fail 409 "这局已经结束（~a）" (game-status g)))
+  (unless (and (or (eq? kind 'accuse) (eq? (game-status g) 'playing)) (affordable? g kind))
+    (fail 409 "行动点不足：~a 需要 ~a 点，剩 ~a 点" kind (cost g kind) (ap-left g)))
   (define npc (npc-arg cd body 'npc))
   (define args
     (case kind
@@ -233,7 +236,7 @@
       [(accuse) '()]))
   (define q (question-text g kind npc args))
   (define step (add1 (game-turn g)))
-  (define cost (hash-ref ACTION-COSTS kind))
+  (define cost (hash-ref (game-costs g) kind))
   (define commits-before (hash-ref (game-commits g) npc '()))
   (define r
     (case kind

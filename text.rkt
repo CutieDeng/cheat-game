@@ -28,6 +28,7 @@
   (case (response-kind r)
     [(cover truth partial fabricate frame) (format "~a：「~a。」" name body)]
     [(unknown) (format "~a：「这个我不清楚。」" name)]
+    [(evade) (format "~a：「我……记不太清了。」\n（~a避开了你的目光。）" name name)]
     [(none) (format "~a：「我和他没什么瓜葛。」" name)]
     [(slip) (format "~a：「~a——」\n（~a突然停住，脸色变了。）" name body name)]
     [(retract) (format "~a：「……好吧，刚才我没说实话。~a。」" name body)]

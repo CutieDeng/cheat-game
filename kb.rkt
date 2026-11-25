@@ -20,8 +20,10 @@
 (struct kitem (id owner prop via critical?) #:transparent)
 (struct case-data (title briefing window slots persons locations npcs culprit
                    truth knowledge cover evidence crime
-                   rels rel-cover turn-limit)
+                   rels rel-cover turn-limit views)
   #:transparent)
+;; views     : (listof (cons 从 到))，从"从"能看见"到"（单向）；同一地点总是互相看得见。
+;;             案件文件可用 (views (L3 L1) ...) 指定，缺省为空。只进入 NPC 视图，不参与规则判定。
 ;; turn-limit：回合上限。案件文件可用 (turn-limit N) 指定；缺省为 max(30, 6 × NPC 数)
 ;; rels      : (listof rl)，真实存在的关系
 ;; rel-cover : hash npc -> (listof kind)，该 NPC 会否认的、自己与被害人的关系
@@ -166,7 +168,12 @@
    (for/hasheq ([c (opt-field 'rel-cover)]) (values (first c) (rest c)))
    (match (opt-field 'turn-limit)
      [(list n) n]
-     ['() (default-turn-limit (length (field 'npcs)))])))
+     ['() (default-turn-limit (length (field 'npcs)))])
+   ;; 旧的网状案件文件只在 meta 里有 views
+   (for/list ([v (let ([top (opt-field 'views)])
+                   (if (pair? top) top
+                       (cond [(assq 'views (opt-field 'meta)) => cdr] [else '()])))])
+     (cons (first v) (second v)))))
 
 (define (default-turn-limit n-npcs) (max 30 (* 6 n-npcs)))
 

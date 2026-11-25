@@ -33,7 +33,7 @@
   (psexp->text cd (prop->sexp p) self))
 
 (define KIND-TEXT
-  (hasheq 'cover "按准备的说法回答" 'truth "如实回答" 'unknown "说不清楚" 'slip "说漏了嘴"
+  (hasheq 'cover "按准备的说法回答" 'truth "如实回答" 'unknown "说不清楚" 'evade "回避（说记不清自己在哪）" 'slip "说漏了嘴"
           'retract "改口" 'refuse "拒绝回答" 'insist "坚持是实话" 'no-effect "（出示无效）"
           'already "（重复出示）" 'confess "认罪"
           'none "说和被害人没什么瓜葛" 'partial "只说了一部分实话" 'fabricate "编了自己的行踪" 'frame "编了别人的行踪" 'withdraw "收回了编的话"))
@@ -72,6 +72,18 @@
        (if (null? hide) ""
            (format "\n你打算否认：~a（动机不会直接让你被定罪，但会让侦探盯上你）"
                    (string-join (for/list ([k hide]) (string-append "你" (rel-text k 'pos))) "；")))))
+    (let ([know (cond [(assq 'know prefix) => cdr] [else '()])])
+      (format "你自己掌握的情况（别人只知道他们自己看见的；你说出哪条、编造什么，都可能和别人看见的事实冲突）：\n~a"
+              (lines (for/list ([k know])
+                       (format "~a~a" (P (car k))
+                               (if (cadr k) (format "（你当时在~a）" (loc-name cd (cadr k))) ""))))))
+    (let ([sight (cond [(assq 'sight prefix) => cdr] [else '()])])
+      (format "视线：同一地点的人互相看得见~a。"
+              (if (null? sight) ""
+                  (string-append "；另外"
+                                 (string-join (for/list ([v sight])
+                                                (format "从~a能看见~a" (loc-name cd (car v)) (loc-name cd (cadr v))))
+                                              "，")))))
     (if (null? covers)
         "你没有准备说法。"
         (format "你准备的说法（前一版被拆穿后才换下一版）：\n~a\n你目前在用：~a"
@@ -113,6 +125,7 @@
     [(truth) (format "如实回答：「~a」~a" body
                      (if (action-exposing? a) "（注意：这会暴露你自己当时的位置，与你的说法冲突）" ""))]
     [(unknown) "说你不清楚"]
+    [(evade) "回避：说记不清自己当时在哪（不会被拆穿，但侦探会更起疑：压力上升，同一个问题被追问几次后你可能会说漏嘴）"]
     [(none) "说你和被害人没什么瓜葛（不明确否认任何事）"]
     [(slip) (format "说出实情：「~a」" body)]
     [(insist) "坚持你说的是实话"]

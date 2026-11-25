@@ -10,8 +10,8 @@
 ;; 某人的固定房间里有人时，能知道他不在。
 ;;
 ;; racket gen.rkt --seed N [--npcs 3..8] [--slots 3..5] [--layers 2|3] [--secrets K] [--honest-witness] [--out 文件]
-(require racket/list racket/match racket/cmdline racket/pretty racket/string "kb.rkt")
-(provide generate-case hhmm st->datum route merge-obs PERSON-NAMES CRIME-LOCS HUB-NAME ROOM-NAMES TRACES)
+(require racket/list racket/match racket/cmdline racket/pretty racket/string "kb.rkt" "solve.rkt")
+(provide generate-case generate-case* hhmm st->datum route merge-obs PERSON-NAMES CRIME-LOCS HUB-NAME ROOM-NAMES TRACES)
 
 (define PERSON-NAMES '("管家" "厨师" "园丁" "女仆" "司机" "秘书" "医生" "侄子" "律师" "保姆"))
 (define CRIME-LOCS '("书房" "卧室" "琴房" "阁楼"))
@@ -199,9 +199,30 @@
                        ,@(if (critical? o) '(critical) '()))))
       (cover ,@(for/list ([c cover]) (cons (car c) (for/list ([layer (cdr c)]) (map st->datum layer)))))
       (evidence ,@(for/list ([ev evidence]) (list (first ev) (second ev) (st->datum (third ev)))))
+      (views (,Lh ,Lc))
       (meta (seed ,seed) (npcs ,n) (slots ,S) (layers ,n-layers) (secrets ,(length secret-extras))
             (witness-lies ,witness-lies?)
             (roles (culprit ,C) (witness ,W) (coworker ,H) (secret ,@(map car (cdr cover))))))))
+
+;; 带筛选的生成：第 1 次用 seed 本身（与 generate-case 相同），之后用 seed×1000+a。
+;; 接受条件：validate 通过、规则 NPC 下检查器破案；adversarial 为 'press / 'strict 时，
+;; 对抗 NPC 下检查器还要破案（'press 允许卡住后追问凶手，'strict 只靠证据）。
+;; 返回 (values datum 尝试次数)，失败时 datum 为 #f
+(define (generate-case* seed #:npcs [n 3] #:slots [S 3] #:layers [L 2] #:secrets [K 0]
+                        #:witness-lies [wl #t] #:adversarial [adv 'press] #:attempts [attempts 50])
+  (let loop ([a 0])
+    (cond
+      [(>= a attempts) (values #f attempts)]
+      [else
+       (define d (generate-case (if (zero? a) seed (+ (* seed 1000) a))
+                                #:npcs n #:slots S #:layers L #:secrets K #:witness-lies wl))
+       (define cd (datum->case d))
+       (if (and (null? (validate-case cd))
+                (eq? 'won (hash-ref (oracle-solve cd) 'status))
+                (or (not adv)
+                    (eq? 'won (hash-ref (adversarial-solve cd #:press? (eq? adv 'press)) 'status))))
+           (values d (add1 a))
+           (loop (add1 a)))])))
 
 (module+ main
   (define seed (make-parameter 1))

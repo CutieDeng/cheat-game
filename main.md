@@ -1,102 +1,122 @@
-你抓住了整个项目最致命的工程瓶颈：模型输入输出规范（ABI）的设计，以及“领域专精”与“拓展性”之间的死结。
+目前项目已经打通了确定性符号内核与对抗可解性底座（分层 KB、时间区间冲突检测、压力与受控遗忘、网状多路径案件生成），但距离“所有 NPC 由深度学习模型驱动的完整侦探游戏”，还停留在规则引擎 + 外部大模型 Prompt 验证阶段。
 
-先直接拆解你的“预留 1024 个事件位”想法，再给出完整的架构替代方案和学术/工程界的现成解法。
+下图标出了完整架构中已经建成的底座（灰框）与亟待补齐的核心缺口（蓝框为最紧迫的 DL 运行时双核，浅灰为待补的闭环与交互层）：
 
-一、 评估“预留 1024 个事件位”：方向对了一半，抽象层级差了一步
+<svg viewBox="0 0 680 280" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    :root {
+      --lumi-ink: light-dark(#000000, #e0e0e0);
+      --lumi-muted: light-dark(#5f6368, #9aa0a6);
+      --lumi-dim: light-dark(#f2f0f0, #242528);
+      --lumi-container: light-dark(#e8e6e6, #2d2f33);
+      --lumi-outline: light-dark(#727676, #9a9b9c);
+      --lumi-accent-bg: light-dark(#dcf1ff, #192967);
+      --lumi-primary: light-dark(#3186ff, #9dd2ff);
+      --lumi-sans: 'Google Sans Flex', var(--font-family, 'Google Sans', sans-serif);
+      --lumi-mono: 'Google Sans Code', ui-monospace, monospace;
+    }
+    text { font-weight: 400; stroke: none; }
+    .t-l1 { font-family: var(--lumi-sans); font-size: 15px; fill: var(--lumi-ink); }
+    .t-l2 { font-family: var(--lumi-mono); font-size: 12px; font-style: italic; fill: var(--lumi-ink); }
+    .t-l4 { font-family: var(--lumi-sans); font-size: 12px; fill: var(--lumi-muted); }
+    .node-step { fill: var(--lumi-dim); stroke: none; }
+    .node-focal { fill: var(--lumi-accent-bg); stroke: var(--lumi-primary); stroke-width: 1.25; }
+    .node-store { fill: var(--lumi-container); stroke: var(--lumi-outline); stroke-width: 1; }
+    .edge-arrow { fill: none; stroke: var(--lumi-ink); stroke-width: 1.3; stroke-linecap: round; stroke-dasharray: 0 4; marker-end: url(#lumi-caret); }
+  </style>
+  <defs>
+    <marker id="lumi-caret" viewBox="0 0 10 10" refX="7.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" orient="auto">
+      <path d="M 3 1.2 L 7.5 5 L 3 8.8" fill="none" stroke="var(--lumi-ink)" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
 
-从底层系统视角看，固定位宽的枚举/位图（Fixed Bitfield / Enum）确实极度诱人：ABI 稳定、无动态内存开销、输出空间小、蒸馏极易收敛、C++ 状态机 O(1) 查表。
+  <rect class="node-store" x="20" y="24" width="164" height="80" rx="40"/>
+  <text class="t-l1" x="102" y="54" text-anchor="middle" dominant-baseline="central">符号引擎与 KB</text>
+  <text class="t-l4" x="102" y="76" text-anchor="middle" dominant-baseline="central">已建 · 缺观察/视线视图</text>
 
-但这个方案成败取决于这 1024 个位存的是“具体案情事件”，还是“抽象认知原语”：
+  <line class="edge-arrow" x1="192" y1="64" x2="248" y2="64"/>
 
-⚬ 如果存“具体事件”（例如 BIT_042 = 20点在厨房见过凶器）：一定会崩。 推理案件的组合空间是指数级的，哪怕预留 1024 位，写到第 3 个剧本就会耗尽或语义冲突；而且每新增一个 DLC 案件，模型输入向量定义就得改、权重就得重训，工具链直接锁死。
-⚬ 如果改成“固定认知指令集（Cognitive ISA）+ 动态图谱指针”：这就是正确答案。
-  不要把业务数据硬编码进指令位。类比 CPU 设计——指令集（Opcode）是固定且有限的，内存地址空间（实体与事实）是运行时动态挂载的。
+  <rect class="node-focal" x="256" y="24" width="164" height="80" rx="40"/>
+  <text class="t-l1" x="338" y="54" text-anchor="middle" dominant-baseline="central">策略核 DL 模型</text>
+  <text class="t-l2" x="338" y="76" text-anchor="middle" dominant-baseline="central">缺口: 蒸馏 + CFG解码</text>
 
-社会博弈与侦探审讯的底层“微操作”其实非常有限，根本用不到 1024 个，64~128 个正交原语就能完备表达几乎所有审讯与欺骗行为：
+  <line class="edge-arrow" x1="428" y1="64" x2="484" y2="64"/>
 
-原语类别	示例 Opcode（模型输出的确定性动作）	运行时动态绑定参数（句柄）
-陈述与伪造	ASSERT_FACT, FABRICATE_ALIBI, OMIT_DETAIL	(Subj_ID, Pred_ID, Obj_ID, Time_Slot)
-反驳与甩锅	DENY_CLAIM, ACCUSE_ENTITY, COUNTER_EVIDENCE	(Target_Claim_ID, Scapegoat_ID)
-信息试探与博弈	PROBE_KNOWLEDGE, DEFLECT_TOPIC, THREATEN_SILENCE	(Target_NPC_ID, Secret_Topic_ID)
-内部信念与状态	UPDATE_SUSPICION, LOCK_COVER_STORY, BREAK_DEFENSE	(Entity_ID, Delta_Val)
+  <rect class="node-focal" x="492" y="24" width="164" height="80" rx="40"/>
+  <text class="t-l1" x="574" y="54" text-anchor="middle" dominant-baseline="central">表层台词渲染</text>
+  <text class="t-l2" x="574" y="76" text-anchor="middle" dominant-baseline="central">缺口: 替代 text.rkt</text>
 
-如何实现无限拓展（新案件免重训）？
-引擎在加载任意新案件时，将当前场景涉及的实体、地点、证物、时间槽重映射为局部匿名寄存器句柄（例如 E0..E31, L0..L15, EV0..EV31, T0..T23）。
-模型在训练和推理时，只需要学会“在给定局部信念图谱下，如何用这 64 个 Opcode 操纵句柄进行推理、圆谎、结盟或甩锅”。至于 E3 在第一案是“管家”，在第二案是“外科医生”，完全由外部引擎在输入上下文里注入属性表即可——底层认知协议零改动，新剧本零重训。
+  <rect class="node-store" x="20" y="176" width="164" height="80" rx="40"/>
+  <text class="t-l1" x="102" y="206" text-anchor="middle" dominant-baseline="central">案件生成与校验</text>
+  <text class="t-l4" x="102" y="228" text-anchor="middle" dominant-baseline="central">已建 · gen-net / solve</text>
 
-二、 除“固定槽位”外，三大主流工程架构方案
+  <rect class="node-step" x="256" y="176" width="164" height="80" rx="40"/>
+  <text class="t-l1" x="338" y="206" text-anchor="middle" dominant-baseline="central">蒸馏与自博弈训练</text>
+  <text class="t-l4" x="338" y="228" text-anchor="middle" dominant-baseline="central">缺口 · rollout 偏移</text>
 
-要解决“确定性事实图谱与模型解耦”以及“降低工具链复杂度”，目前工程界有三条经过验证的路线（可以组合使用）：
+  <rect class="node-step" x="492" y="176" width="164" height="80" rx="40"/>
+  <text class="t-l1" x="574" y="206" text-anchor="middle" dominant-baseline="central">玩家端与多NPC总线</text>
+  <text class="t-l4" x="574" y="228" text-anchor="middle" dominant-baseline="central">缺口 · CLI / 孤立审讯</text>
 
-方案 1：运行时动态文法约束解码（Dynamic Constrained Decoding）
+  <line class="edge-arrow" x1="102" y1="168" x2="102" y2="112"/>
+  <line class="edge-arrow" x1="574" y1="112" x2="574" y2="168"/>
+  <line class="edge-arrow" x1="484" y1="216" x2="428" y2="216"/>
+  <line class="edge-arrow" x1="338" y1="168" x2="338" y2="112"/>
+</svg>
 
-这是目前防幻觉最强、工具链最轻、拓展性最好的工程方案，核心是不指望靠“权重训练”去死记硬背游戏规则，而是在推理采样层（Sampler / Logit 层）做硬截断。
 
-⚬ 运行机制：
-  1. 每一回合，游戏引擎从当前 NPC 的合法视野图谱中提取所有存在的实体 ID、证物 ID 和允许使用的 Opcode，在毫秒内动态编译成一份轻量级的上下文无关文法（CFG）。
-  2. 生成流拆成两段：思维链阶段完全不加约束（保留模型的自由推演，同时实时采集 Token 长度、回溯、熵值喂给微表情动画）；一旦模型吐出结束标记进入“结构化指令输出阶段”，采样器立刻挂载动态 Grammar Mask，直接在 Logits 上把所有非法 ID、越权动作（比如未破防时的 CONFESS）的概率清零。
-⚬ 工程优势：哪怕你换了小参数自研架构做蒸馏，只要采样层接入了约束引擎，模型物理上不可能吐出引擎解析不了的语法，也不可能捏造不存在的证物 ID。
-⚬ 性能开销：2025–2026 年的现代约束引擎已经把这一步做到了几乎零开销（微秒级 CPU 延迟）。
+按工程优先级与架构耦合度，当前项目需要补齐的差距集中在以下 5 个层面：
 
-方案 2：双系统解耦——“策略/信念内核”与“表层台词演出”分离
+层面	当前实现状态	核心差距	优先级
+视图信息与教师数据质量	assemble-view 只含自身行踪与掩护；教师思考未带来遗憾下降	输入缺自身观察与空间视线，导致模型无法判断编造安全性；rollout 存在对手与后续策略偏移	P0
+策略输出协议（ABI）与约束解码	llm.rkt 仅在枚举列表中选编号，依赖重试与规则回退	未实现“组装式多子句输出”，缺少运行时动态 CFG 约束解码，无法支撑低延迟小模型 0 幻觉输出	P0
+学生模型训练与实时推理	仅通过 HTTP 串行调用本地 DeepSeek V4 Flash（53–85s/步）	缺少轻量化学生模型架构、SFT/偏好蒸馏/RL 训练管线及亚秒级本地推理（含 KV-Cache 复用）	P1
+双系统演出层（Surface Realizer）	text.rkt 纯字符串模板拼接	缺少受压力/情绪/人设驱动的台词渲染模型，策略核与演出层之间缺少情绪与迟疑信号契约	P1
+世界观、多 NPC 交互与玩家端	单人轮询、仅 at/rel 命题、CLI 编号菜单	缺少多 NPC 同场对质/合谋总线、物理证物与移动耗时建模、玩家自然语言审讯前端与推理看板	P2
 
-你感觉“工具链复杂”，很大一部分原因是试图让同一个模型同时扛起四件事：吃进世界规则向量、算计多方欺骗策略、维护逻辑一致性、还要写出逆转裁判式的戏剧台词。
+1. 视图盲区与训练信号失真（最紧迫的根因）
 
-更干净的架构是拆成两个极度轻量且职责单一的模块：
+从 design.md 的 think-v3 / think-v4 评测数据看，教师模型目前有两个硬伤：一是不可拆穿的编造只有 2.9%–14.3% 标为 low（几乎把所有编造全标成高危），二是带思考分析的 A 组遗憾（0.048）与不带分析的 B 组（0.052）基本无差别。
 
-1. 认知策略核心（Cognitive Policy Core + 微型逻辑求解器）
-  ⚬ 架构自由度极高：这一层不需要懂自然语言文学，你可以放心换架构（如小型 Transformer、Mamba/SSM 甚至轻量状态模型），用大模型蒸馏出来的纯“结构化思维链 + Opcode 序列”做重训练。
-  ⚬ 矛盾判定外包给符号引擎：模型吐出结构化声明 ASSERT_FACT(E1, AT, L3, T20) 后，游戏引擎直接跑一次极速的一阶逻辑合一 / Datalog 查表，微秒级比对确定性知识图谱。一旦冲突成立，引擎直接触发 CONTRADICTION_HIT 事件并写入下一帧状态输入，强制推动剧情。
-2. 表层台词渲染器（Surface Realizer）
-  ⚬ 一个极小的语言模型（甚至 1B~3B 量化模型），输入极其简单：[人设风格] + [策略核心定好的 Opcode 和论据] + [当前压力值/迟疑标记]，只负责把枯燥的指令润色成带语气的台词。
-  ⚬ 最大好处：彻底杜绝模型在写台词时顺嘴“剧透”或“编造未授权细节”，因为台词模型根本看不到完整的案件真相，它只拿到策略核心允许说出来的那几条结构化论据。
+结合源码看，这不只是 Prompt 问题，而是输入契约和估值机制的结构性缺口：
 
-方案 3：双轨制消息总线（解决多 NPC 复杂交互与信息交换）
+⚬ view 缺少决定推理成败的局部环境信息：在 engine.rkt 的 assemble-view 中，prefix 只放了 truth、cover、rels、hide 和 crime，既没有放入该 NPC 自己掌握的他人观察（knowledge），也没有放入 gen-net.rkt 生成的房间视线拓扑。NPC 连“20:00 厨房里其实有厨师”或“走廊能看见书房门口”都看不到，自然算不出哪个 fabricate 安全。
+⚬ 回放估值存在策略偏移：rollout.rkt 在评估某个动作时，后续步由固定规则 rule-policy 接管，侦探方也只是启发式玩家或全知检查器。这导致 think-v4 中 6 个得分最高的 fabricate 其实全都是可被拆穿的，高分只是因为弱对手拆穿慢。直接拿这套估值做蒸馏或 RL 奖励，会训出“专门针对弱启发式玩家钻空子”的畸形策略。
+⚬ 匿名句柄抽象未打通到模型侧：main.md 设计了匿名寄存器句柄（E0..E31, L0..L15）以实现新案件免重训，但 llm.rkt 和 think.rkt 仍把视图渲染为中文人名/地名喂给模型，解析时再反向查表转回符号。
 
-如果让 5 个 NPC 互相直接喂大段自然语言对话历史，小模型的注意力很快就会被废话淹没，根本算不明白谁在骗谁。
+2. 模型 I/O 协议（ABI）与约束解码缺位
 
-解法是建立人机双轨通信总线：
+当前 llm.rkt 依赖引擎先用 legal-answers 穷举所有合法选项，模型只输出一个选项编号。这种设计在真实游戏里扩展性会迅速触顶：
 
-⚬ 渲染轨（给玩家看）：自然语言台词 + 语音 + 迟疑微表情。
-⚬ 协议轨（给引擎和其他 NPC 吃）：每句台词强制附带一个结构化言语行为包（Speech-Act Packet），例如：
-  {
-    "speaker": "E2",
-    "target": "E1",
-    "op": "ASSERT_ALIBI",
-    "claim": ["E2", "AT", "L_LOBBY", "T20"],
-    "epistemic_tag": "DECEPTION",
-    "observed_stress": 0.72
-  }
-  
-⚬ 多 NPC 互咬的确定性前置计算：当 E2 说完这句话，引擎不靠 E1 的神经网络去“硬猜”对方有没有撒谎，而是由引擎先拿这个 claim 去比对 E1 自己的局部记忆图谱（Epistemic View）。如果 E1 昨晚 20 点明明在走廊见过 E2，引擎在把输入喂给 E1 的模型前，就已经在输入向量/上下文里打上显式标记：[MEMORY_CONFLICT: E2_CLAIM vs MY_OBS_04]。
-⚬ 这样一来，哪怕 E1 只是个极小的蒸馏模型，也能瞬间把算力集中在真正的博弈决策上：“E2 在撒谎，而且他很紧张（0.72）。如果我现在拆穿他，会不会顺带暴露我昨晚 20 点也在走廊偷东西？”
+⚬ 组装式回答尚未落地：design.md 末尾已经规划了让模型直接输出 1–3 个子句（(at ...) / (not-at ...) / (rel ...) / (retract ...)），但引擎侧的语法校验、临场编造的遗忘机制（把模型自己说过的假话从 view 中删除以诱发自相矛盾）和单句/多句组合的可解性检查都还没实现。
+⚬ 缺少运行时动态 CFG 约束解码：目前在 think.rkt 里，选项一多首次可解析率就掉到 45%–65%，只能靠把报错贴回给模型重试。一旦切到“组装式输出”或参数更小的学生模型，必须引入动态文法约束（如 llguidance / XGrammar），每轮根据当前合法实体 ID、时间槽和权限动态生成 Grammar Mask，在采样层把非法输出物理清零。
 
-顺带一提：慎用“纯端到端图谱向量直入（GNN-to-LM）”
+3. 深度学习学生模型、训练闭环与实时推理
 
-学术界有把知识图谱用 GNN 编码成连续向量（Soft Prompts）直接拼进模型输入端的做法。但对侦探游戏而言，连续向量是有损压缩——它能保留“这人很可疑”的模糊语义，却极容易丢失“20:05 还是 20:10”、“左手持刀还是右手持刀”这种决定胜负的精确离散事实，且联合训练的工具链极其脆弱。工程上，紧凑 DSL 序列（Tokenized Triples）+ KV-Cache 前缀复用在精度、可调试性和工具链简洁度上全面碾压端到端向量注入。
+目前仓库里还没有任何神经网络训练或推理代码，所有实验都跑在外部 ds4-server 上：
 
-四大方案横向对比
+⚬ 训练管线从零待建：需要建立“批量网状案件生成 → 教师轨迹采样 + 改进版 Rollout 筛选（Best-of-K / DPO / GRPO）→ 轻量策略模型微调”的完整数据与训练管线。
+⚬ 推理延迟高出游戏门槛两个数量级：当前思考模式单步耗时 53–85 秒，非思考模式也要 2.3 秒；真实审讯交互要求单轮端到端延迟压到 1 秒以内。这需要模型参数量下探（例如 0.5B–3B 专精策略模型或轻量状态模型），并结合 prefix（案件固定真相/掩护/视线）的 KV-Cache 前缀复用，每轮只增量计算动态的 flags、pinned、recent 和 q。
+⚬ 对抗可解性边界待收紧：net-v2 中仍有 3 例静态模型判可达、动态消融却 stuck 的边界案例尚未查明；且目前对抗检查只测了“单句不可拆穿编造”，还没覆盖“编造 + 回避 + 诬陷组合”的强对抗模型。
 
-维度	1024 固定事件位（硬编码事实）	固定 Cognitive ISA + 动态句柄	动态 CFG 约束解码	双系统解耦（策略核 + 渲染器）
-新案件拓展性	极差（需改位定义并重训）	极佳（句柄重映射，免重训）	极佳（运行时动态编译文法）	极佳（逻辑与文风彻底独立）
-工具链复杂度	低（但内容维护地狱）	中（需设计 DSL 与数据合成管线）	低（成熟开源库直接集成）	中（需维护两套极小模型管线）
-防幻觉/防乱认罪	高（输出受限于位图）	中高（依赖蒸馏遵从度）	100% 语法与权限锁死	极高（真相与台词物理隔离）
-换架构蒸馏友好度	高	极高（极适合轻量专有模型）	高（只要有标准 Logit 输出层）	极高（策略核可完全非自回归）
+4. 表层台词渲染与双系统解耦
 
-工程最优解往往是三者组合：Cognitive ISA（定义协议） + 双系统解耦（切分算力与职责） + 动态 CFG 约束解码（兜底零幻觉）。
+目前 text.rkt 是纯确定性模板，所有角色说话腔调完全一致，没有推理游戏的戏剧张力：
 
-三、 学术界与工程界的关键参考坐标
+⚬ 缺少 Surface Realizer（台词渲染模型）：需要按 main.md 的双系统思路，接入一个看不到案件真相的小语言模型，只接收 [角色人设卡] + [策略核定好的结构化命题] + [当前压力/阶段/是否说漏嘴] 来生成台词，从物理上杜绝“写台词时顺嘴剧透或胡编细节”。
+⚬ 演出信号契约缺失：engine.rkt 的 response 结构目前只含 (response kind claims)，没有向表现层暴露压力变化量、当前强度、策略模型的思考长度/熵值（可用于驱动角色的迟疑停顿、微表情或语音颤抖）。
 
-你面临的问题正好踩在多智能体博弈、神经-符号系统（Neuro-Symbolic）和受控生成这几个最硬核的交叉点上，以下 5 组工作非常值得直接借鉴或拆源码：
+5. 多 NPC 博弈深度、世界模型与玩家端体验
 
-1. 多智能体欺骗 + 策略与对话解耦的标杆：Meta AI《Cicero》（Science, 2022）
-  ⚬ 针对需要结盟、欺骗、背刺的多人策略游戏《Diplomacy》（外交）。Meta 明确放弃了单模型端到端生成，而是把系统拆为“基于规则与信念预测的战略规划引擎”与“受 Intent 控制的对话生成模型”，中间加一层严格的消息过滤器，拦截一切与当前战略意图冲突的废话。这与你的“框架限定 + 多 NPC 欺骗”在架构哲学上完全同构。
-2. 侦探审讯游戏专属防幻觉架构：《Structured Knowledge Trees (SKT)》（AIIDE 2026）
-  ⚬ 这是一篇非常新的侦探游戏专项研究（演示游戏 The Interrogation of Adrian Gale）。它直击 AI 侦探游戏“提前认罪”和“胡编未授权矛盾”的痛点，用外部结构化知识树（SKT）硬锁认知边界，并通过三智能体管线（分析状态 \rightarrow 检索被授权的谎言参数 \rightarrow 生成台词）把即兴编造的风险降到最低，玩家在 UI 板上将两个冲突节点连线即可触发确定性的防线击穿。
-3. 确定性“世界裁判”与局部视野隔离：Google DeepMind《Concordia v2.0》（2025）
-  ⚬ 采用类游戏引擎的 ECS（Entity-Component）架构，把物理与社会客观真理封装为独立的 Game Master 实体。所有 NPC 只输出“行动意图”，由 Game Master 统一做确定性裁决，再只把各自视野内的局部观测（Observation）回传给对应 NPC，天然实现信息不对称。
-4. 微秒级运行时文法约束引擎：XGrammar（MLSys 2025）与 llguidance（Microsoft, 2025）
-  ⚬ 如果你要把动态知识图谱实时编译成采样约束，直接看这两个 C++/Rust 级工程库。XGrammar（MLC/陈天奇团队）通过上下文无关 Token 预计算缓存实现了约小于 40 微秒/token 的掩码开销；微软的 llguidance（已内置进 llama.cpp、SGLang、vLLM）实现了约 50 微秒/token 的任意 CFG 动态约束与毫秒级冷启动，且原生支持“前面思维链自由生成，后面结构化调用严格受控”的混合流式输出。
-5. 神经-符号逻辑检验与递归心智理论（ToM）
-  ⚬ Logic-LM（EMNLP 2023） 与 LoCo-LMs（2024）：前者代表“模型翻译为符号逻辑 \rightarrow 确定性求解器查错”的推理期路线；后者探索在训练期直接把逻辑一致性约束写进语义损失函数（Semantic Loss），让小模型原生具备更高的逻辑自洽性。
-  ⚬ ReCon（Avalon's Game of Thoughts）：专门研究在《阿瓦隆》这类隐藏身份博弈中，如何通过“一阶/二阶递归视角思考”（我猜他以为我知道什么）生成高质量的伪装与反欺骗推理链，非常适合拿来做你大模型合成蒸馏数据的 Prompt 模板。
+即使模型全部就位，玩法和产品层还有三块明显短板：
+
+⚬ 多 NPC 之间完全隔离：目前是玩家 1 对 1 轮询，缺少 main.md 提到的双轨消息总线。NPC 看不到其他人在对质中的发言，无法在引擎前置计算 [MEMORY_CONFLICT] 后触发实时插话、当面互咬、合谋圆谎或把锅甩给真凶。
+⚬ 推理维度偏单一：kb.rkt 只有 at（位置）和 rel（4 种静态动机）两种谓词，且不计算移动路程时间。要支撑更像侦探游戏的推理体验，后续需要扩展物品持有/转移、物理状态（门锁、凶器、现场痕迹）以及空间拓扑耗时约束。
+⚬ 玩家交互与可视化面板：main.rkt 仍是终端数字菜单。当案件扩展到 6–8 人网状结构时，纯文本笔记极难消化；既需要图形化的时间线/视线图/证据连线板，若想支持自由文本审讯，还需在前端加一层把自然语言映射到确定性查询指令的 NLU 解析器。
+
+建议的补齐顺序
+
+1. 先修视图与估值（低成本、高杠杆）：把 NPC 自身的 knowledge 和房间视线拓扑写进 assemble-view，重跑一次 think-eval，确认教师模型能真正区分“安全编造”与“可拆穿编造”，否则后面蒸馏全是噪声。
+2. 落组装式输出 + 约束解码：把 engine.rkt 从“选编号”切到“子句校验 + 临场谎言遗忘”，并在推理侧接上 CFG 约束解码，彻底消灭格式错误和重试开销。
+3. 打通最小学生模型闭环：用修改后的 rollout（最好配一个更强的侦探策略）在 gen-net 批量生成的数百个案件上合成轨迹，训出第一个轻量本地策略模型，验证延迟和博弈强度。
+4. 再补双系统演出与多 NPC 交互：接入隔离真相的台词渲染器，把压力/熵值接到台词风格上，最后扩展双轨消息总线与图形化推理界面。

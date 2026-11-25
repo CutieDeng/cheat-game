@@ -30,6 +30,9 @@
   (for ([e (case-data-evidence cd)]) (printf "  ~a\n" (evidence->note cd e)))
   (printf "听到的说法：\n")
   (for ([c (reverse (game-claims g))]) (printf "  ~a\n" (claim->note cd c)))
+  (printf "回避过的问题：\n")
+  (for ([h (reverse (game-history g))] #:when (eq? (fourth h) 'evade))
+    (printf "  第 ~a 轮 ~a 说不清自己 ~a 在哪\n" (first h) (person-name cd (second h)) (slot-label cd (third (third h)))))
   (printf "已揭穿的矛盾：\n")
   (for ([c (game-exposed g)]) (printf "  ~a\n" (conflict->note cd c))))
 
@@ -51,10 +54,17 @@
   (define slots (for/list ([i (vector-length (case-data-slots cd))]) (cons (slot-label cd i) i)))
   (printf "《~a》\n~a\n" (case-data-title cd) (case-data-briefing cd))
   (let loop ()
-    (when (eq? (game-status g) 'playing)
-      (printf "\n==== 第 ~a/~a 轮~a ====\n" (add1 (game-turn g)) (turn-limit g)
-              (if (eq? (phase g) 'confront) "（对质阶段）" ""))
-      (define cmd (choose "行动：" '(("询问" . ask) ("出示" . present) ("查看笔记" . notes) ("指认凶手" . accuse)) #:back "退出游戏"))
+    (when (active? g)
+      (printf "\n==== 行动点 已用 ~a / ~a~a ====\n" (game-ap g) (turn-limit g)
+              (cond [(eq? (game-status g) 'accuse-only) "（行动点用尽，只能指认）"]
+                    [(eq? (phase g) 'confront) "（对质阶段）"]
+                    [else ""]))
+      (define cmd
+        (choose "行动："
+                (append (if (affordable? g 'ask) (list (cons (format "询问（~a 点）" (cost g 'ask)) 'ask)) '())
+                        (if (affordable? g 'present) (list (cons (format "出示（~a 点）" (cost g 'present)) 'present)) '())
+                        (list (cons "查看笔记" 'notes) (cons (format "指认凶手（~a 点）" (cost g 'accuse)) 'accuse)))
+                #:back "退出游戏"))
       (case cmd
         [(#f) (exit 0)]
         [(notes) (show-notes g)]
@@ -79,9 +89,9 @@
          (define npc (choose "指认谁是凶手？" npcs))
          (when npc (printf "\n~a\n" (response->text cd npc (accuse! g npc))))])
       (loop)))
-  (printf "\n==== 结局：~a（用了 ~a 轮）====\n"
+  (printf "\n==== 结局：~a（用了 ~a 行动点）====\n"
           (case (game-status g) [(won) "破案"] [(lost) "失败"] [else "中止"])
-          (game-turn g)))
+          (game-ap g)))
 
 (module+ main
   (command-line
