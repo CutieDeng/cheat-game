@@ -7,10 +7,10 @@
 (define seed (make-parameter 1))
 (define case-file (make-parameter "case-manor.rktd"))
 
-(define (choose prompt options)
+(define (choose prompt options #:back [back "返回"])
   (printf "\n~a\n" prompt)
   (for ([o options] [i (in-naturals 1)]) (printf "  ~a. ~a\n" i (car o)))
-  (printf "  0. 返回\n> ")
+  (printf "  0. ~a\n> " back)
   (flush-output)
   (define line (read-line))
   (when (eof-object? line) (newline) (exit 0))
@@ -18,7 +18,7 @@
   (cond [(not (exact-nonnegative-integer? n)) (printf "无效输入\n") (choose prompt options)]
         [(= n 0) #f]
         [(<= n (length options)) (cdr (list-ref options (sub1 n)))]
-        [else (printf "无效输入\n") (choose prompt options)]))
+        [else (printf "无效输入\n") (choose prompt options #:back back)]))
 
 (define (slot-label cd i)
   (define-values (f t) (slot-range cd i))
@@ -52,16 +52,17 @@
   (printf "《~a》\n~a\n" (case-data-title cd) (case-data-briefing cd))
   (let loop ()
     (when (eq? (game-status g) 'playing)
-      (printf "\n==== 第 ~a/~a 轮~a ====\n" (add1 (game-turn g)) TURN-LIMIT
+      (printf "\n==== 第 ~a/~a 轮~a ====\n" (add1 (game-turn g)) (turn-limit g)
               (if (eq? (phase g) 'confront) "（对质阶段）" ""))
-      (define cmd (choose "行动：" '(("询问" . ask) ("出示" . present) ("查看笔记" . notes) ("指认凶手" . accuse))))
+      (define cmd (choose "行动：" '(("询问" . ask) ("出示" . present) ("查看笔记" . notes) ("指认凶手" . accuse)) #:back "退出游戏"))
       (case cmd
         [(#f) (exit 0)]
         [(notes) (show-notes g)]
         [(ask)
          (define npc (choose "询问谁？" npcs))
-         (define subj (and npc (choose "关于谁的行踪？" npcs)))
-         (define slot (and subj (choose "哪个时间段？" slots)))
+         (define subj (and npc (choose "关于谁？" npcs)))
+         (define slot (and subj (choose "问什么？" (append (for/list ([s slots]) (cons (format "~a 在哪里" (car s)) (cdr s)))
+                                                          (list (cons "和被害人的关系" 'rel))))))
          (when slot
            (printf "\n~a\n" (response->text cd npc (ask! g npc subj slot)))
            (show-debug g npc))]

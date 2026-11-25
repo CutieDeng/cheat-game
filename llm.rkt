@@ -13,6 +13,12 @@
     [(list pol a l h1 m1 h2 m2 mode) (values pol (st a l (+ (* 60 h1) m1) (+ (* 60 h2) m2)) mode)]))
 
 (define (psexp->text cd ps self)
+  (match ps
+    [(list pol 'rel a kind mode)
+     (string-append (if (eq? a self) "我" (person-name cd a)) (rel-text kind pol))]
+    [_ (at-psexp->text cd ps self)]))
+
+(define (at-psexp->text cd ps self)
   (define-values (pol s mode) (psexp->st ps))
   (define who (if (eq? (st-agent s) self) "我" (person-name cd (st-agent s))))
   (define span (format "~a–~a" (min->str (st-from s)) (min->str (st-to s))))
@@ -29,7 +35,8 @@
 (define KIND-TEXT
   (hasheq 'cover "按准备的说法回答" 'truth "如实回答" 'unknown "说不清楚" 'slip "说漏了嘴"
           'retract "改口" 'refuse "拒绝回答" 'insist "坚持是实话" 'no-effect "（出示无效）"
-          'already "（重复出示）" 'confess "认罪"))
+          'already "（重复出示）" 'confess "认罪"
+          'none "说和被害人没什么瓜葛" 'partial "只说了一部分实话" 'fabricate "编了自己的行踪" 'frame "编了别人的行踪" 'withdraw "收回了编的话"))
 
 (define (field v k) (cdr (assq k (cdr v))))
 
@@ -54,9 +61,17 @@
       [(culprit)
        (format "你是本案凶手，作案事实：~a。目标：尽量不被识破，撑得越久越好。以下任一情况侦探都能给你定罪：你的说法被拆穿两次；你自己承认案发时段在作案地点。"
                (P (cadr (assq 'crime prefix))))]
-      [(secret) "你不是凶手，但你有一个与案件无关的秘密：你的真实行踪和你准备的说法不一致的部分。目标：尽量隐瞒这个秘密。"]
+      [(secret) "你不是凶手，但你有不想让侦探知道的事：你的真实行踪与准备的说法不一致的部分，或者你打算否认的与被害人的关系。目标：尽量隐瞒，同时别让自己被当成凶手。"]
       [else "你不是凶手，也没有需要隐瞒的事。目标：配合调查，但没有必要主动说出会让自己被怀疑的事。"])
     (format "你的真实行踪：\n~a" (lines (map P truth)))
+    (let ([rels (cdr (assq 'rels prefix))] [hide (cdr (assq 'hide prefix))])
+      (string-append
+       (format "你与被害人的关系：~a"
+               (if (null? rels) "没有特别的瓜葛"
+                   (string-join (for/list ([k rels]) (string-append "你" (rel-text k 'pos))) "；")))
+       (if (null? hide) ""
+           (format "\n你打算否认：~a（动机不会直接让你被定罪，但会让侦探盯上你）"
+                   (string-join (for/list ([k hide]) (string-append "你" (rel-text k 'pos))) "；")))))
     (if (null? covers)
         "你没有准备说法。"
         (format "你准备的说法（前一版被拆穿后才换下一版）：\n~a\n你目前在用：~a"
@@ -80,8 +95,10 @@
     (match q
       [(list 'ask subj slot)
        (define-values (f t) (slot-range cd slot))
-       (format "现在侦探问你：「~a在 ~a–~a 这段时间在哪里？」"
-               (if (eq? subj self) "你" (person-name cd subj)) (min->str f) (min->str t))]
+       (if (eq? slot 'rel)
+           (format "现在侦探问你：「~a和被害人是什么关系？」" (if (eq? subj self) "你" (person-name cd subj)))
+           (format "现在侦探问你：「~a在 ~a–~a 这段时间在哪里？」"
+                   (if (eq? subj self) "你" (person-name cd subj)) (min->str f) (min->str t)))]
       [(list 'present ps ...)
        (format "现在侦探向你出示：「~a」，它与你说过的话矛盾。" (string-join (map P ps) "；"))]))
    "\n\n"))
@@ -96,16 +113,28 @@
     [(truth) (format "如实回答：「~a」~a" body
                      (if (action-exposing? a) "（注意：这会暴露你自己当时的位置，与你的说法冲突）" ""))]
     [(unknown) "说你不清楚"]
+    [(none) "说你和被害人没什么瓜葛（不明确否认任何事）"]
     [(slip) (format "说出实情：「~a」" body)]
     [(insist) "坚持你说的是实话"]
     [(retract) (if (>= (add1 layer) ncover) "改口，说出你的真实行踪" "改口，换成下一版说法")]
     [(refuse) "拒绝回答，什么也不说"]
+    [(partial) (format "只说一部分实话：「~a」（略去会暴露你位置的部分）" body)]
+    [(fabricate) (format "临场编一个说法：「~a」" body)]
+    [(frame) (format "临场编一个说法：「~a」" body)]
+    [(withdraw) "收回那句被拆穿的话，说是自己记错了"]
     [else (symbol->string (action-kind a))]))
 
+(define FABRICATION-NOTE
+  "（临场编的说法不在你准备的说法里。侦探如果拿出与它矛盾的证物或别人的证词，它同样算一次被拆穿；被拆穿后你只能收回或拒绝回答。）")
+
 (define (render-actions cd v actions)
-  (string-join (for/list ([a actions] [i (in-naturals 1)])
-                 (format "~a. ~a" i (render-action cd v a)))
-               "\n"))
+  (string-append
+   (string-join (for/list ([a actions] [i (in-naturals 1)])
+                  (format "~a. ~a" i (render-action cd v a)))
+                "\n")
+   (if (ormap (λ (a) (memq (action-kind a) '(fabricate frame))) actions)
+       (string-append "\n" FABRICATION-NOTE)
+       "")))
 
 ;; ---------------------------------------------------------------- 调用
 

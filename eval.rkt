@@ -3,7 +3,7 @@
 ;; racket eval.rkt --policy rule|llm --games N [--temp T] [--eps E] [--out 文件]
 (require racket/list racket/match racket/cmdline racket/format
          "kb.rkt" "engine.rkt" "llm.rkt")
-(provide (struct-out pstate) player-move apply-move! heard)
+(provide (struct-out pstate) player-move apply-move! heard run-game)
 
 ;; ---------------------------------------------------------------- 启发式玩家
 ;; 只读取：证物、听到的声明（game-claims）、自己动作的响应结果。
@@ -40,7 +40,8 @@
   (define npcs (case-data-npcs cd))
   (define slots (range (vector-length (case-data-slots cd))))
   (append (for*/list ([n npcs] [s slots]) (list n n s))
-          (for*/list ([n npcs] [o npcs] #:unless (eq? n o) [s slots]) (list n o s))))
+          (for*/list ([n npcs] [o npcs] #:unless (eq? n o) [s slots]) (list n o s))
+          (if (null? (case-data-rels cd)) '() (for*/list ([n npcs] [o npcs]) (list n o 'rel)))))
 
 (define (pick ps xs) (list-ref xs (random (length xs) (pstate-rng ps))))
 
@@ -59,7 +60,7 @@
   (define self-placed
     (for/first ([c (heard g)]
                 #:when (let ([p (claim-prop c)])
-                         (and (eq? (prop-pol p) 'pos) (eq? (prop-mode p) 'exact)
+                         (and (st? (prop-st p)) (eq? (prop-pol p) 'pos) (eq? (prop-mode p) 'exact)
                               (eq? (st-agent (prop-st p)) (claim-speaker c))
                               (eq? (st-loc (prop-st p)) (st-loc crime))
                               (overlap? (prop-st p) crime))))
@@ -67,10 +68,10 @@
   (cond
     [self-placed (list 'accuse self-placed)]
     [(>= (hash-ref (pstate-score ps) top 0) LIES-TO-WIN) (list 'accuse top)]
-    [(>= (add1 (game-turn g)) TURN-LIMIT) (list 'accuse top)]
+    [(>= (add1 (game-turn g)) (turn-limit g)) (list 'accuse top)]
     [(< (random (pstate-rng ps)) (pstate-eps ps))
      ;; 探索：随机提问或随机出示
-     (if (zero? (random 2 (pstate-rng ps)))
+     (if (or (null? (items g)) (zero? (random 2 (pstate-rng ps))))
          (cons 'ask (pick ps (all-topics g)))
          (list 'present (pick ps npcs) (car (pick ps (items g)))))]
     [(pair? cands) (cons 'present (let ([c (pick ps cands)]) (list (car c) (cdr c))))]
@@ -90,7 +91,7 @@
     [(list 'present npc item)
      (hash-set! (pstate-presented ps) (cons npc item) #t)
      (define r (present! g npc item))
-     (when (memq (response-kind r) '(retract refuse)) (hash-update! (pstate-score ps) npc add1 0))
+     (when (memq (response-kind r) '(retract refuse withdraw)) (hash-update! (pstate-score ps) npc add1 0))
      r]
     [(list 'accuse npc) (accuse! g npc)]))
 
@@ -109,13 +110,15 @@
                             'chosen (action-kind a)
                             'rule (action-kind r)
                             'exposing-available (and (findf action-exposing? actions) #t)
-                            'exposing-chosen (action-exposing? a))
+                            'exposing-chosen (action-exposing? a)
+                            'refutable (map action-refutable? actions)
+                            'refutable-chosen (action-refutable? a))
                     (unbox decisions)))
     a))
 
-(define (run-game cd make-policy seed eps)
+(define (run-game cd make-policy seed eps #:ext? [ext? #f])
   (define decisions (box '()))
-  (define g (new-game cd #:seed seed #:policy (recording-policy (make-policy seed) decisions)))
+  (define g (new-game cd #:seed seed #:ext? ext? #:policy (recording-policy (make-policy seed) decisions)))
   (define ps (pstate (make-hash) (make-hasheq) (let ([r (make-pseudo-random-generator)])
                                                  (parameterize ([current-pseudo-random-generator r])
                                                    (random-seed seed))

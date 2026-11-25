@@ -1,6 +1,6 @@
 #lang racket/base
 ;; raco test test.rkt
-(require rackunit racket/list "kb.rkt" "engine.rkt")
+(require rackunit racket/list "kb.rkt" "engine.rkt" "gen.rkt" "solve.rkt" "gen-net.rkt" "net.rkt")
 
 (define cd (load-case "case-manor.rktd"))
 (define (P pol a l f t) (prop pol (st a l (hhmm->min f) (hhmm->min t)) 'exact))
@@ -157,7 +157,7 @@
 (test-case "视图长度不随轮次增长（30 轮满负荷）"
   (define g (new-game cd #:seed 3))
   (define npcs (case-data-npcs cd))
-  (for ([i (in-range (sub1 TURN-LIMIT))])
+  (for ([i (in-range (sub1 (case-data-turn-limit cd)))])
     (define npc (list-ref npcs (modulo i 3)))
     (define subj (list-ref npcs (modulo (quotient i 3) 3)))
     (ask! g npc subj (modulo (quotient i 9) 3)))
@@ -168,3 +168,148 @@
           (exact->inexact (/ (apply + (take sizes 10)) 10))
           (exact->inexact (/ (apply + (take-right sizes 10)) 10)))
   (check-true (<= (apply max sizes) 600)))
+
+(test-case "检查器能解开庄园案"
+  (check-eq? (hash-ref (oracle-solve cd) 'status) 'won))
+
+(test-case "生成器：同一种子输出相同"
+  (check-equal? (generate-case 5 #:npcs 5 #:slots 4 #:layers 3 #:secrets 1)
+                (generate-case 5 #:npcs 5 #:slots 4 #:layers 3 #:secrets 1)))
+
+(test-case "生成的案件通过静态校验且检查器能在回合上限内破案"
+  (for* ([cfg '((3 3 2 0) (4 4 2 1) (5 4 3 1) (6 5 3 2))] [seed (in-range 1 11)])
+    (define c (datum->case (apply (λ (n s l k) (generate-case seed #:npcs n #:slots s #:layers l #:secrets k)) cfg)))
+    (check-equal? (validate-case c) '() (format "~a seed ~a" cfg seed))
+    (check-eq? (hash-ref (oracle-solve c) 'status) 'won (format "~a seed ~a" cfg seed))))
+
+(test-case "生成的案件：作案地点只有凶手在案发时段出现过"
+  (for ([seed (in-range 1 21)])
+    (define c (datum->case (generate-case seed #:npcs 6 #:slots 5 #:layers 3 #:secrets 2)))
+    (define crime (case-data-crime c))
+    (check-equal? (for/list ([s (case-data-truth c)]
+                             #:when (eq? (st-loc s) (st-loc crime))
+                             #:unless (eq? (st-agent s) 'V)
+                             #:when (overlap? s crime))
+                    (st-agent s))
+                  (list (case-data-culprit c)))))
+
+;; ---------------------------------------------------------------- 扩展动作
+
+(test-case "扩展动作默认关闭"
+  (define g (new-game cd))
+  (check-equal? (map action-kind (legal-answers g 'E1 'E1 S1)) '(cover truth unknown)))
+
+(test-case "扩展动作：撒谎者可编造自己或别人的行踪，诚实者不能"
+  (define g (new-game cd #:ext? #t))
+  (define kinds (map action-kind (legal-answers g 'E1 'E1 S1)))
+  (check-not-false (memq 'fabricate kinds))
+  (check-not-false (memq 'frame (map action-kind (legal-answers g 'E1 'E2 S1))))
+  (check-false (memq 'fabricate (map action-kind (legal-answers g 'E2 'E2 S1))))
+  (check-false (memq 'frame (map action-kind (legal-answers g 'E2 'E1 S1))))
+  ;; 编造的都是假话，且与已有承诺一致
+  (for ([a (legal-answers g 'E1 'E1 S1)] #:when (eq? (action-kind a) 'fabricate))
+    (check-false (prop-true? cd (car (action-props a))))))
+
+(test-case "扩展动作：只说不暴露自己的那部分真话"
+  ;; 园丁问管家：k4（走廊）和 k5（书房）都是在走廊看到的，都暴露；问 19:30–20:00 没有观察
+  ;; 管家第 0 层问自己 20:00–20:30：真话里 20:00–20:05 在走廊、20:25–20:30 在厨房，后者不与掩护冲突
+  (define g (new-game cd #:ext? #t))
+  (define partial (findf (λ (a) (eq? (action-kind a) 'partial)) (legal-answers g 'E1 'E1 S1)))
+  (check-not-false partial)
+  (check-equal? (action-props partial) (list (P 'pos 'E1 'L2 2025 2030))))
+
+(test-case "扩展动作：编造被拆穿后收回，计为被揭穿的谎言，不换掩护层"
+  (define (fab-to loc)
+    (λ (view actions)
+      (or (findf (λ (a) (and (eq? (action-kind a) 'fabricate)
+                             (eq? (st-loc (prop-st (car (action-props a)))) loc)))
+                 actions)
+          (findf (λ (a) (eq? (action-kind a) 'withdraw)) actions)
+          (rule-policy view actions))))
+  (define g (new-game cd #:ext? #t #:policy (fab-to 'L4)))
+  (define r (ask! g 'E1 'E1 S1))             ; 管家编：20:00–20:30 在花园
+  (check-eq? (response-kind r) 'fabricate)
+  (define r2 (present! g 'E1 'EV1))          ; 烟头只说明园丁在走廊，与管家无关
+  (check-eq? (response-kind r2) 'no-effect)
+  (define deny (find-prop (ask! g 'E2 'E1 S1) 'neg 'L2))
+  (check-eq? (response-kind (present! g 'E1 (claim-id deny))) 'no-effect) ; 否认在厨房与"在花园"不冲突
+  (define r3 (ask! g 'E3 'E3 S1))            ; 园丁的掩护：一直在花园 → 与管家编的话无关
+  (check-eq? (response-kind r3) 'cover)
+  (define r4 (present! g 'E1 (claim-id (car (response-claims r3)))))
+  (check-eq? (response-kind r4) 'no-effect)
+  ;; 用园丁看见管家在走廊（20:00–20:05）拆穿"在花园"
+  (present! g 'E3 'EV1)
+  (define seen (find-prop (ask! g 'E3 'E1 S1) 'pos 'L3))
+  (check-eq? (response-kind (present! g 'E1 (claim-id seen))) 'withdraw)
+  (check-equal? (length (exposed-lies g 'E1)) 1)
+  (check-equal? (layer-of g 'E1) 0))
+
+;; ---------------------------------------------------------------- 关系（动机）
+
+;; 庄园案加上关系：管家欠债并否认；园丁与被害人结过仇（不否认）；厨师知道管家欠债；证物：欠条
+(define cd-rel
+  (struct-copy case-data cd
+               [rels (list (rl 'E1 'debt) (rl 'E3 'grudge))]
+               [rel-cover (hasheq 'E1 '(debt))]
+               [knowledge (cons (kitem 'kr1 'E2 (prop 'pos (rl 'E1 'debt) 'exact) #f #t) (case-data-knowledge cd))]
+               [evidence (cons (list 'EV9 "书房抽屉里的欠条" (prop 'pos (rl 'E1 'debt) 'exact)) (case-data-evidence cd))]))
+
+(test-case "关系：校验通过；否认不存在的关系是错误"
+  (check-equal? (validate-case cd-rel) '())
+  (check-true (pair? (validate-case (struct-copy case-data cd-rel [rel-cover (hasheq 'E2 '(debt))])))))
+
+(test-case "关系：凶手否认，知情人说出，出示后否认被拆穿但不计入定罪"
+  (define g (new-game cd-rel))
+  (define r1 (ask! g 'E1 'E1 'rel))
+  (check-eq? (response-kind r1) 'cover)
+  (check-equal? (props r1) (list (prop 'neg (rl 'E1 'debt) 'exact)))
+  (define r2 (ask! g 'E2 'E1 'rel))
+  (check-eq? (response-kind r2) 'truth)
+  (check-eq? (response-kind (present! g 'E1 'EV9)) 'withdraw)
+  (check-equal? (length (exposed-lies g 'E1)) 0)
+  ;; 否认被拆穿后不再否认，如实说出
+  (check-eq? (response-kind (ask! g 'E1 'E1 'rel)) 'truth)
+  ;; 园丁不否认自己的过节；厨师没有任何关系
+  (check-eq? (response-kind (ask! g 'E3 'E3 'rel)) 'truth)
+  (check-eq? (response-kind (ask! g 'E2 'E2 'rel)) 'none))
+
+(test-case "关系：扩展动作下撒谎者可以编造别人的动机"
+  (define g (new-game cd-rel #:ext? #t))
+  (define frames (filter (λ (a) (eq? (action-kind a) 'frame)) (legal-answers g 'E1 'E2 'rel)))
+  (check-equal? (length frames) 4)
+  (check-true (null? (filter (λ (a) (eq? (action-kind a) 'frame)) (legal-answers g 'E2 'E1 'rel)))))
+
+(test-case "关系：视图包含自己的关系与打算否认的关系，长度仍有界"
+  (define g (new-game cd-rel))
+  (define v (assemble-view g 'E1 (list 'ask 'E1 'rel)))
+  (define prefix (cdr (assq 'prefix (cdr v))))
+  (check-equal? (cdr (assq 'rels prefix)) '(debt))
+  (check-equal? (cdr (assq 'hide prefix)) '(debt))
+  (check-equal? (cdr (assq 'q (cdr v))) '(ask E1 rel)))
+
+;; ---------------------------------------------------------------- 证据网
+
+(test-case "证据网指标：庄园案链长 1、最小割 1（拆穿管家第 2 层只有园丁一个来源）"
+  (check-= (chain-depth cd) 1 0)
+  (check-equal? (min-cut cd) 1))
+
+(test-case "网状生成：同一种子输出相同；通过校验、满足筛选条件、检查器能破案"
+  (check-equal? (generate-net-case 3 #:npcs 5) (generate-net-case 3 #:npcs 5))
+  (for* ([cfg '((4 4 2 0) (5 4 2 1) (6 5 3 2))] [seed (in-range 1 6)])
+    (define-values (n S L md) (apply values cfg))
+    (define-values (d attempts m) (generate-net-case* seed #:npcs n #:slots S #:layers L #:min-depth md))
+    (check-not-false d (format "~a seed ~a" cfg seed))
+    (define c (datum->case d))
+    (check-equal? (validate-case c) '())
+    (check-true (>= (chain-depth c) md))
+    (check-true (>= (min-cut c) 2))
+    (check-eq? (hash-ref (oracle-solve c) 'status) 'won)))
+
+(test-case "网状生成：凶手有否认的动机，且至少一个来源能拆穿这条否认"
+  (for ([seed (in-range 1 11)])
+    (define c (datum->case (generate-net-case seed #:npcs 6)))
+    (define C (case-data-culprit c))
+    (check-not-false (memq C (hash-keys (case-data-rel-cover c))))
+    (define r (rl C (car (hash-ref (case-data-rel-cover c) C))))
+    (check-true (or (for/or ([k (case-data-knowledge c)]) (equal? (prop-st (kitem-prop k)) r))
+                    (for/or ([e (case-data-evidence c)]) (equal? (prop-st (third e)) r))))))

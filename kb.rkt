@@ -1,22 +1,30 @@
 #lang racket/base
 ;; 知识库：命题表示、区间运算、冲突规则、案件加载与静态校验
 (require racket/list racket/match racket/format)
-(provide (struct-out st) (struct-out prop) (struct-out kitem) (struct-out case-data)
+(provide (struct-out st) (struct-out rl) (struct-out prop) (struct-out kitem) (struct-out case-data)
+         REL-KINDS rels-of prop-agent rel-text default-turn-limit
          hhmm->min min->str st->string
          overlap? overlap-range clip conflict-kind overlap-bounds
-         load-case validate-case prop-true? truth-of
+         load-case datum->case validate-case prop-true? truth-of
          slot-range slots-overlapping widen-to-slots
          person-name loc-name)
 
 ;; 命题：agent 在 [from, to) 期间位于 loc（时间单位：分钟）
 (struct st (agent loc from to) #:transparent)
+;; 关系命题：agent 与被害人之间存在 kind 关系（不带时间）。动机只作线索，不进定罪条件
+(struct rl (agent kind) #:transparent)
+(define REL-KINDS '(debt heir blackmail grudge))
 ;; pol: 'pos | 'neg    mode: 'exact | 'approx
 (struct prop (pol st mode) #:transparent)
 ;; NPC 的观察。via = 观察时观察者所在的地点
 (struct kitem (id owner prop via critical?) #:transparent)
 (struct case-data (title briefing window slots persons locations npcs culprit
-                   truth knowledge cover evidence crime)
+                   truth knowledge cover evidence crime
+                   rels rel-cover turn-limit)
   #:transparent)
+;; turn-limit：回合上限。案件文件可用 (turn-limit N) 指定；缺省为 max(30, 6 × NPC 数)
+;; rels      : (listof rl)，真实存在的关系
+;; rel-cover : hash npc -> (listof kind)，该 NPC 会否认的、自己与被害人的关系
 ;; crime : st，agent 为凶手，表示作案地点与时段
 ;; persons / locations : hash 符号 -> 名称
 ;; slots    : vector of (cons from to)
@@ -30,6 +38,17 @@
   (~a (quotient m 60) ":" (~r (remainder m 60) #:min-width 2 #:pad-string "0")))
 (define (st->string s)
   (format "(at ~a ~a ~a-~a)" (st-agent s) (st-loc s) (min->str (st-from s)) (min->str (st-to s))))
+
+(define (prop-agent p)
+  (define s (prop-st p))
+  (if (rl? s) (rl-agent s) (st-agent s)))
+
+(define (rel-text kind pol)
+  (case kind
+    [(debt) (if (eq? pol 'pos) "欠被害人一大笔钱" "不欠被害人钱")]
+    [(heir) (if (eq? pol 'pos) "是被害人遗嘱的受益人" "不在被害人的遗嘱里")]
+    [(blackmail) (if (eq? pol 'pos) "正被被害人勒索" "没有被被害人勒索")]
+    [(grudge) (if (eq? pol 'pos) "和被害人结过仇" "和被害人没有过节")]))
 
 (define (overlap? a b)
   (and (< (st-from a) (st-to b)) (< (st-from b) (st-to a))))
@@ -58,11 +77,14 @@
 ;; ---------------------------------------------------------------- 冲突规则
 
 ;; 返回冲突类型或 #f。approx 命题不参与冲突检测。
+;; 关系命题只与同一 (主体, 关系) 的反极性命题冲突。
 (define (conflict-kind p q)
   (define a (prop-st p))
   (define b (prop-st q))
   (cond
     [(or (eq? (prop-mode p) 'approx) (eq? (prop-mode q) 'approx)) #f]
+    [(or (rl? a) (rl? b))
+     (and (rl? a) (rl? b) (equal? a b) (not (eq? (prop-pol p) (prop-pol q))) 'assert-deny)]
     [(not (eq? (st-agent a) (st-agent b))) #f]
     [(not (overlap? a b)) #f]
     [(and (eq? (prop-pol p) 'pos) (eq? (prop-pol q) 'pos)
@@ -84,7 +106,17 @@
           [(<= (st-from (car xs)) cur) (loop (max cur (st-to (car xs))) (cdr xs))]
           [else #f])))
 
+(define (rels-of cd agent)
+  (for/list ([r (case-data-rels cd)] #:when (eq? (rl-agent r) agent)) (rl-kind r)))
+
 (define (prop-true? cd p)
+  (define s (prop-st p))
+  (if (rl? s)
+      (let ([has? (and (member s (case-data-rels cd)) #t)])
+        (if (eq? (prop-pol p) 'pos) has? (not has?)))
+      (prop-true/at? cd p)))
+
+(define (prop-true/at? cd p)
   (define s (prop-st p))
   (define segs (filter (λ (x) (eq? (st-loc x) (st-loc s))) (truth-of cd (st-agent s))))
   (case (prop-pol p)
@@ -100,13 +132,16 @@
 (define (parse-st d)
   (match d
     [(list 'at a l f t) (st a l (hhmm->min f) (hhmm->min t))]
+    [(list 'rel a k) (rl a k)]
     [_ (error 'load-case "无法解析命题: ~s" d)]))
 
-(define (load-case path)
-  (define d (call-with-input-file path read))
+(define (load-case path) (datum->case (call-with-input-file path read)))
+
+(define (datum->case d)
   (define (field k)
     (cond [(assq k d) => cdr]
           [else (error 'load-case "缺少字段 ~a" k)]))
+  (define (opt-field k) (cond [(assq k d) => cdr] [else '()]))
   (case-data
    (car (field 'title))
    (car (field 'briefing))
@@ -126,7 +161,14 @@
    (for/list ([e (field 'evidence)])
      (list (first e) (second e) (prop 'pos (parse-st (third e)) 'exact)))
    (match (field 'crime)
-     [(list l f t) (parse-st (list 'at (car (field 'culprit)) l f t))])))
+     [(list l f t) (parse-st (list 'at (car (field 'culprit)) l f t))])
+   (for/list ([r (opt-field 'rels)]) (rl (first r) (second r)))
+   (for/hasheq ([c (opt-field 'rel-cover)]) (values (first c) (rest c)))
+   (match (opt-field 'turn-limit)
+     [(list n) n]
+     ['() (default-turn-limit (length (field 'npcs)))])))
+
+(define (default-turn-limit n-npcs) (max 30 (* 6 n-npcs)))
 
 (define (person-name cd sym) (hash-ref (case-data-persons cd) sym (λ () (symbol->string sym))))
 (define (loc-name cd sym) (hash-ref (case-data-locations cd) sym (λ () (symbol->string sym))))
@@ -156,7 +198,19 @@
       (err! "真相自相矛盾: ~a / ~a" (st->string a) (st->string b))))
 
   ;; 2. 观察与真相一致；观察者当时确实在 via
-  (for ([k (case-data-knowledge cd)])
+  (define (check-rl r where)
+    (unless (hash-has-key? (case-data-persons cd) (rl-agent r)) (err! "~a: 未定义的人物 ~a" where (rl-agent r)))
+    (unless (memq (rl-kind r) REL-KINDS) (err! "~a: 未知关系 ~a" where (rl-kind r))))
+  (for ([r (case-data-rels cd)]) (check-rl r "rels"))
+  (for* ([(npc kinds) (in-hash (case-data-rel-cover cd))] [k kinds])
+    (unless (member (rl npc k) (case-data-rels cd))
+      (err! "~a 否认的关系 ~a 并不存在，否认不是谎言" npc k)))
+  (for ([k (case-data-knowledge cd)] #:when (rl? (prop-st (kitem-prop k))))
+    (check-rl (prop-st (kitem-prop k)) (kitem-id k))
+    (unless (prop-true? cd (kitem-prop k)) (err! "观察 ~a 与真相不符" (kitem-id k))))
+  (for ([e (case-data-evidence cd)] #:when (rl? (prop-st (third e))))
+    (unless (prop-true? cd (third e)) (err! "证物 ~a 与真相不符" (first e))))
+  (for ([k (case-data-knowledge cd)] #:unless (rl? (prop-st (kitem-prop k))))
     (define s (prop-st (kitem-prop k)))
     (check-st s (kitem-id k))
     (unless (memq (kitem-owner k) (case-data-npcs cd))

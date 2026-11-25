@@ -5,6 +5,12 @@
 
 ;; speaker 不为 #f 时，主体等于说话人则用"我"
 (define (prop->text cd p [speaker #f])
+  (if (rl? (prop-st p))
+      (let ([a (rl-agent (prop-st p))])
+        (string-append (if (eq? a speaker) "我" (person-name cd a)) (rel-text (rl-kind (prop-st p)) (prop-pol p))))
+      (at->text cd p speaker)))
+
+(define (at->text cd p speaker)
   (define s (prop-st p))
   (define who (if (eq? (st-agent s) speaker) "我" (person-name cd (st-agent s))))
   (define span (format "~a–~a" (min->str (st-from s)) (min->str (st-to s))))
@@ -20,12 +26,14 @@
   (define body
     (string-join (for/list ([c (response-claims r)]) (prop->text cd (claim-prop c) npc)) "；"))
   (case (response-kind r)
-    [(cover truth) (format "~a：「~a。」" name body)]
+    [(cover truth partial fabricate frame) (format "~a：「~a。」" name body)]
     [(unknown) (format "~a：「这个我不清楚。」" name)]
+    [(none) (format "~a：「我和他没什么瓜葛。」" name)]
     [(slip) (format "~a：「~a——」\n（~a突然停住，脸色变了。）" name body name)]
     [(retract) (format "~a：「……好吧，刚才我没说实话。~a。」" name body)]
     [(refuse) (format "~a：「我没什么要补充的。」" name)]
     [(insist) (format "~a：「我说的都是实话。」" name)]
+    [(withdraw) (format "~a：「……那句话是我记错了，当我没说。」" name)]
     [(no-effect) (format "~a：「这能说明什么？」" name)]
     [(already) (format "~a：「这件事你刚才已经拿出来过了。」" name)]
     [(confess) (format "~a：「……是我。~a。」" name body)]
