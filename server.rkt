@@ -12,10 +12,11 @@
 ;;   POST /api/games/<id>/ask         {npc, subject, slot}          slot 为时间段下标或 "rel"
 ;;   POST /api/games/<id>/present     {npc, item}                   item 为证物 id（字符串）或声明 id（整数）
 ;;   POST /api/games/<id>/accuse      {npc}
+;;   /api/v1/...                      地图版（v1），见 api-v1.rkt；页面在 /v1/
 ;; 动作的响应：{response: {kind text clauses cost claim_ids}, state: 局面}
 (require racket/list racket/string racket/match racket/cmdline racket/tcp racket/random
          racket/runtime-path net/uri-codec json openssl
-         "kb.rkt" "engine.rkt" "text.rkt")
+         "kb.rkt" "engine.rkt" "text.rkt" "http-error.rkt" "api-v1.rkt")
 (provide handle-api state->jsexpr)
 
 (define-runtime-path BASE-DIR ".")
@@ -34,8 +35,7 @@
 
 ;; ---------------------------------------------------------------- 错误
 
-(struct http-error (code msg))
-(define (fail code fmt . args) (raise (http-error code (apply format fmt args))))
+;; http-error 与 fail 在 http-error.rkt（api-v1.rkt 共用）
 
 (define (reason code)
   (case code
@@ -278,6 +278,7 @@
   (define (need-body) (unless (hash? body) (fail 400 "请求体应为 JSON 对象")) body)
   (define (locked s thunk) (call-with-semaphore (sess-lock s) thunk))
   (match* (method segs)
+    [(_ (cons "v1" rest)) (handle-api-v1 method rest body)]
     [("GET" '("cases")) (values 200 (cases-json))]
     [("POST" '("games")) (values 201 (create-game (need-body)))]
     [("GET" (list "games" id)) (let ([s (get-session id)]) (values 200 (locked s (λ () (state->jsexpr s)))))]
@@ -376,7 +377,9 @@
   (for ([s segs*])
     (when (or (regexp-match? #rx"^[.]" s) (regexp-match? #rx"[\\\\\0]" s))
       (fail 404 "没有这个文件")))
-  (define p (simplify-path (apply build-path STATIC-DIR segs*)))
+  (define p0 (simplify-path (apply build-path STATIC-DIR segs*)))
+  ;; 目录映射到其中的 index.html（/v1/ → static/v1/index.html）
+  (define p (if (directory-exists? p0) (build-path p0 "index.html") p0))
   (define root (path->string (path->directory-path STATIC-DIR)))
   (unless (and (string-prefix? (path->string p) root) (file-exists? p)) (fail 404 "没有这个文件"))
   p)

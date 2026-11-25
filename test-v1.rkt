@@ -1,7 +1,8 @@
 #lang racket/base
 ;; v1 M1 测试：地图、路径、观察推导、带容限的冲突。raco test test-v1.rkt
 (require rackunit racket/list "map.rkt" "world.rkt" "claims.rkt" "case1.rkt" "memory.rkt" "exclude.rkt" "gen-v1.rkt"
-         "engine-v1.rkt" "liar-v1.rkt" "detective-v1.rkt" "text-v1.rkt")
+         "engine-v1.rkt" "liar-v1.rkt" "detective-v1.rkt" "text-v1.rkt"
+         "api-v1.rkt" (only-in "http-error.rkt" http-error? http-error-code) json)
 
 (define c (load-case1 "cases/manor-v1.rktd"))
 (define m (case1-map c))
@@ -268,3 +269,23 @@
 (test-case "预算：⌈1.2 · 人数²⌉"
   (check-equal? (map budget-for-npcs '(4 5 6 8)) '(20 30 44 77))
   (check-equal? (game1-budget (new-game1 (gen-case 1 6))) 44))
+
+(test-case "web API：建局、提问、出示、指认，响应都能转成 JSON；非法参数报 400，结束后再动作报 409"
+  (define-values (c0 st) (handle-api-v1 "POST" '("games") (hasheq 'npcs 5 'seed 3)))
+  (check-equal? c0 201)
+  (check-false (hash-has-key? st 'excluded))            ; 不显示排除状态
+  (define id (hash-ref st 'id))
+  (define p1 (hash-ref (car (hash-ref st 'persons)) 'id))
+  (define-values (c1 r1) (handle-api-v1 "POST" (list "games" id "ask") (hasheq 'kind "self" 'npc p1 'slot 1)))
+  (check-equal? (hash-ref (hash-ref r1 'state) 'ap_used) 1)
+  (define ev (hash-ref (car (hash-ref st 'evidence)) 'id))
+  (define-values (c2 r2) (handle-api-v1 "POST" (list "games" id "present") (hasheq 'npc p1 'item ev)))
+  (check-equal? (hash-ref (hash-ref r2 'state) 'ap_used) 3)
+  (define (code-of thunk) (with-handlers ([http-error? http-error-code]) (thunk) 'ok))
+  (check-equal? (code-of (λ () (handle-api-v1 "POST" (list "games" id "ask") (hasheq 'kind "self" 'npc "nobody" 'slot 1)))) 400)
+  (check-equal? (code-of (λ () (handle-api-v1 "POST" (list "games" id "ask") (hasheq 'kind "self" 'npc p1 'slot 99)))) 400)
+  (define-values (c3 r3) (handle-api-v1 "POST" (list "games" id "accuse") (hasheq 'npc p1)))
+  (check-pred string? (jsexpr->string r3))
+  (check-pred hash? (hash-ref (hash-ref r3 'state) 'reveal))
+  (check-equal? (code-of (λ () (handle-api-v1 "POST" (list "games" id "ask") (hasheq 'kind "self" 'npc p1 'slot 1)))) 409)
+  (check-equal? (code-of (λ () (handle-api-v1 "GET" (list "games" "nope") #f))) 404))

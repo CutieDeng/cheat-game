@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>推理对局 · 地图版</title>
+<link rel="stylesheet" href="/v1/style.css">
+<script src="/v1/app.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <h1 id="title">推理对局 · 地图版</h1>
+  <div class="ap">
+    <span id="ap-text">—</span>
+    <div class="meter"><div id="ap-fill" class="meter-fill"></div></div>
+  </div>
+  <form id="newgame" class="newgame">
+    <label>人数 <select id="npcs"><option>4</option><option selected>5</option><option>6</option><option>8</option></select></label>
+    <label>种子 <input id="seed" type="number" min="1" max="999999" placeholder="随机"></label>
+    <label title="凶手知道所有人的证词，挑最不容易被拆穿的说法"><input id="omni" type="checkbox" checked> 狡猾的凶手</label>
+    <button type="submit">新的一局</button>
+  </form>
+</header>
+
+<main class="layout">
+  <section class="col left">
+    <div class="card">
+      <h2>案情</h2>
+      <p id="briefing"></p>
+      <p id="rule" class="muted"></p>
+    </div>
+    <div class="card">
+      <h2>地图 <small>点地点可选为提问对象</small></h2>
+      <svg id="map" class="map" role="img" aria-label="地图"></svg>
+      <p id="map-note" class="muted"></p>
+    </div>
+    <div class="card">
+      <h2>在场者 <small>点选即为询问 / 出示 / 指认对象</small></h2>
+      <ul id="persons" class="persons"></ul>
+    </div>
+  </section>
+
+  <section class="col center">
+    <div id="log" class="log" aria-live="polite"></div>
+    <div class="card composer">
+      <div class="row"><span class="lbl">问 <b id="target-name">—</b></span>
+        <div id="kinds" class="chips"></div></div>
+      <div class="row" id="arg-row"><span class="lbl" id="arg-label">关于</span><div id="args" class="chips"></div></div>
+      <div class="row"><span class="lbl">时段</span><div id="slots" class="chips"></div></div>
+      <div class="row end"><span id="preview" class="muted"></span>
+        <button id="ask-btn" type="button">提问</button></div>
+    </div>
+  </section>
+
+  <section class="col right">
+    <div class="card">
+      <h2>证物</h2>
+      <ul id="evidence" class="items"></ul>
+    </div>
+    <div class="card grow">
+      <h2>听到的证词 <small id="heard-count"></small></h2>
+      <label class="filter"><input id="only-target" type="checkbox"> 只看当前对象说的</label>
+      <ul id="heard" class="items"></ul>
+    </div>
+    <div class="card">
+      <h2>已拆穿</h2>
+      <ul id="exposed" class="notes"></ul>
+    </div>
+    <div class="card">
+      <button id="accuse-btn" class="danger" type="button">指认</button>
+      <p class="muted">指认立刻结束本局，不消耗行动点。</p>
+    </div>
+  </section>
+</main>
+
+<div id="ending" class="ending" hidden>
+  <div class="ending-box">
+    <h2 id="ending-title"></h2>
+    <p id="ending-text"></p>
+    <div id="reveal"></div>
+    <button id="ending-close" type="button">查看记录</button>
+    <button id="ending-new" type="button">再来一局</button>
+  </div>
+</div>
+<div id="toast" class="toast" hidden></div>
+</body>
+</html>

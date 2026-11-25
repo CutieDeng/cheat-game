@@ -122,11 +122,12 @@ KB 分层：
 | `net-eval.rkt` | 网状案件批量评测，记录写入 `runs/net-v1.rktd` |
 | `cases/net-n6-d2.rktd` | 生成的示例案件（6 人，链长 2），`racket main.rkt --case cases/net-n6-d2.rktd` |
 | `rollout.rkt` | 回放评估：每个选项的价值估计 |
-| `spec-v1.md` | v1 规格：地图与路径、诚实误差、模型生成谎言、小模型训练流程（M1–M3 已实现） |
+| `spec-v1.md` | v1 规格：地图与路径、诚实误差、模型生成谎言、小模型训练流程（M1–M4 已实现） |
 | `map.rkt` `world.rkt` `claims.rkt` `case1.rkt` | v1 M1：地图与最短路、路径与观察推导、带容限的声明约束与可满足性判定、v1 案件加载。测试 `raco test test-v1.rkt`；示例 `cases/manor-v1.rktd` |
 | `memory.rkt` `exclude.rkt` `gen-v1.rkt` | v1 M2：诚实记忆采样、冲突核与排除判定、地图版案件生成与可解性检查。`racket gen-v1.rkt --seed N --npcs 5 --out f.rktd`；`--batch K` 统计，记录 `runs/gen1-v1.txt` |
 | `engine-v1.rkt` `liar-v1.rkt` `detective-v1.rkt` `text-v1.rkt` `main-v1.rkt` | v1 M3：对局、规则规划器、全知检查器与公开信息侦探、文本、终端菜单（`racket main-v1.rkt --seed 3 --npcs 5 [--debug]`）。评测 `racket detective-v1.rkt --seeds 30`，记录 `runs/det1-v1.txt`（M3）、`runs/det1-v3.txt`（加入拆穿法、容限 5 之后） |
 | `budget1.rkt` | v1 预算标定：公开信息侦探所需行动点分布与各预算下胜率。`racket budget1.rkt --seeds 100`，记录 `runs/budget1-v1.txt` |
+| `api-v1.rkt` `http-error.rkt` `static/v1/` | v1 M4：地图版 web 接口（`/api/v1/`）与页面（`/v1/`）；`http-error.rkt` 是 server.rkt 与 api-v1.rkt 共用的错误类型 |
 | `adv-eval.rkt` | 对抗可解性统计（strict / press / 只追问），记录写入 `runs/adv-v1.rktd` |
 | `ap-eval.rkt` | 行动点倍率标定：出示倍率 × 预算，比较检查器 / 启发式 / 穷举玩家。`racket ap-eval.rkt [--seeds N] [--big K] [--out 文件]` |
 | `gen-eval.rkt` | 批量生成 + 校验 + 检查器 + 启发式玩家评测，记录写入 `runs/gen-v1.rktd` |

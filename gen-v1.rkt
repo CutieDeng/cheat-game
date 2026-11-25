@@ -111,7 +111,7 @@
       (define a (rnd (seg-in s) (max (seg-in s) (- (seg-out s) 2)) rng))
       (define b (min (seg-out s) (+ a (rnd 2 5 rng))))
       `(,(string->symbol (format "EV~a" (add1 i)))
-        ,(format "~a 的痕迹" (hash-ref names (path-who p)))
+        ,(format "~a的痕迹" (hash-ref names (path-who p)))
         (at ,(path-who p) ,(seg-node s) ,(min->hhmm a) ,(min->hhmm b)))))
   (define obs (derive-observations m paths T0 T1))
   ;; 观察条数随人数约按人数平方增长；记混 / 没注意到的概率按 (5/n)² 缩放，使可发现的错记每局约 0.5–1 条（见 spec-v1.md §9）
@@ -119,7 +119,7 @@
   (define noise (hash-set* DEFAULT-NOISE
                            'p-confuse (* scale (hash-ref DEFAULT-NOISE 'p-confuse))
                            'p-miss (* scale (hash-ref DEFAULT-NOISE 'p-miss))))
-  (define mem (sample-memory m paths obs rng #:noise noise))
+  (define mem (sample-memory m paths obs rng #:noise noise #:window (cons T0 T1)))
   `((title "地图版案件")
     (briefing ,(format "被害人在~a遇害，时间约 ~a–~a。找出凶手。"
                        (hash-ref room-names crime-room) (clock clo) (clock chi)))

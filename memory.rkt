@@ -24,11 +24,13 @@
     x))
 
 ;; 返回 hasheq：人 -> 子句列表（内部时间为分钟）
-(define (sample-memory m paths observations rng #:noise [noise DEFAULT-NOISE])
+;; window：(cons t0 t1)，给出时把记忆的时刻截到时间窗内（真相在窗内，截断只会更接近真相，不引入新错误）
+(define (sample-memory m paths observations rng #:noise [noise DEFAULT-NOISE] #:window [window #f])
   (define (N k) (hash-ref noise k))
+  (define (clip t) (if window (min (cdr window) (max (car window) t)) t))
   (define (span a b k)
-    (define a* (+ a (uniform rng k)))
-    (define b* (+ b (uniform rng k)))
+    (define a* (clip (+ a (uniform rng k))))
+    (define b* (clip (+ b (uniform rng k))))
     (values a* (max a* b*)))
   (define (maybe-confuse n)
     (define cs (confusable m n))
@@ -50,7 +52,7 @@
            (define-values (a b) (span f t (N 'shift-other)))
            (list 'saw s (maybe-confuse n) a b)]
           [(obs 'saw-door _ s n f _ d)
-           (list 'saw-door s (maybe-confuse n) d (+ f (uniform rng (N 'shift-other))))]
+           (list 'saw-door s (maybe-confuse n) d (clip (+ f (uniform rng (N 'shift-other)))))]
           [(obs (and k (or 'saw-only 'doors-only)) _ ps n f t _)
            (define-values (a b) (span f t (N 'shift-other)))
            (list k n a b (thin ps))])))
