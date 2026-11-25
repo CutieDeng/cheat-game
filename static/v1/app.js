@@ -296,7 +296,7 @@ function showEnding() {
   $("ending-title").textContent = s.status === "won" ? "破案" : "失败";
   const last = s.log[s.log.length - 1];
   $("ending-text").textContent =
-    (last && last.kind === "accuse" ? last.text : `行动点用完（${s.ap_budget} 点）。`) + ` 用了 ${s.ap_used} 点。凶手是${r.culprit_name}。`;
+    (last && last.kind === "accuse" ? last.text : `行动点用完（${s.ap_budget} 点）。`) + `\n用了 ${s.ap_used} 点。凶手是${r.culprit_name}。`;
   const box = $("reveal");
   box.replaceChildren();
   const seg = (xs) => xs.map((x) => `${x.place_name} ${x.from}–${x.to}`).join(" → ");

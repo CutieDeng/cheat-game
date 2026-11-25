@@ -14,7 +14,7 @@
 (require racket/list racket/match "map.rkt" "world.rkt" "claims.rkt" "case1.rkt" "memory.rkt" "exclude.rkt" "liar-v1.rkt")
 (provide (struct-out game1) new-game1 COSTS1 SLOT-MIN slot-range question-claims
          ask1! present1! accuse1! excluded-now? can-win? active1? affordable1? ap-left1 all-questions
-         default-budget1 budget-for-npcs EXPOSE-TO-WIN exposure-sources)
+         default-budget1 budget-for-npcs EXPOSE-TO-WIN exposure-sources accusation-gaps)
 
 (define COSTS1 (hasheq 'ask 1 'present 2 'accuse 0))
 (define EXPOSE-TO-WIN 2)
@@ -151,6 +151,22 @@
   (define cls (append (filter (λ (cl) (not (memq (claim-speaker cl) (list y z)))) (game1-heard g))
                       (map third (case1-evidence c))))
   (excluded? (case1-map c) (case1-t0 c) (case1-t1 c) y cls (case1-crime c)))
+
+;; 指认 z 时还挡着排除法的人：(listof (cons 人 原因))
+;;   原因 self-only：听到的话里没有别人（不算他本人和 z）能约束他的；insufficient：有第三方证词，但不足以排除
+;; 只在对局结束后给玩家看（局中不显示排除状态）
+(define (accusation-gaps g z)
+  (define c (game1-c g))
+  (define m (case1-map c))
+  (for/list ([y (person-ids c)]
+             #:unless (eq? y z)
+             #:unless (excluded-now? g y #:accused z))
+    (define others
+      (for/list ([cl (append (game1-heard g) (map third (case1-evidence c)))]
+                 #:unless (memq (claim-speaker cl) (list y z))
+                 #:when (pair? (constraints-on m cl y)))
+        cl))
+    (cons y (if (null? others) 'self-only 'insufficient))))
 
 (define (can-win? g z)
   (for/and ([y (person-ids (game1-c g))] #:unless (eq? y z)) (excluded-now? g y #:accused z)))

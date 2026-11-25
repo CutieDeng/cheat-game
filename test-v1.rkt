@@ -58,10 +58,10 @@
              (saw-door E3 E1 study in 2004)
              (saw E2 E1 kitchen 1930 1959)
              (saw E2 E1 kitchen 2024 2100)
-             (saw-only E2 kitchen 2000 2023 ())
-             (saw-only E3 hall 2000 2003 (E1))
-             (saw-only E3 hall 2004 2009 ())
-             (doors-only E3 kitchen 1959 2009 (E1))
+             ;; 一段连续看守一条，名单列出每人在场的时段（2026-11-26 起）
+             (saw-only E2 kitchen 1930 2100 ((E1 1930 1959) (E1 2024 2100)))
+             (saw-only E3 hall 1959 2009 ((E1 2000 2003)))
+             (doors-only E3 kitchen 1959 2009 ((E1 out 1959)))
              (saw E3 E2 kitchen 1930 1957))])
     (check-not-false (member o obs-sexps) (format "缺少观察 ~s" o)))
   ;; 管家 20:18 出书房时园丁已在花园，没人看见
@@ -105,6 +105,13 @@
   (check-false (conf 'E1 (C 'E1 '(at E1 kitchen 1930 2000)) none))
   ;; 负观察不约束说话人自己
   (check-false (conf 'E2 (C 'E2 '(at E2 kitchen 1930 2100)) none)))
+
+(test-case "冲突：名单里的人在列出的时段以外也不在（合并后的负观察）"
+  ;; 厨师一直看着厨房：管家 19:30–19:59、20:24–21:00 在。管家说 20:00–20:20 在厨房 → 冲突（他在空档里）
+  (define watch (C 'E2 '(saw-only kitchen 1930 2100 ((E1 1930 1959) (E1 2024 2100)))))
+  (check-eq? (conf 'E1 (C 'E1 '(at E1 kitchen 2000 2020)) watch) 'sight)
+  ;; 说 19:30–19:55 在厨房：在他被看见的时段内，不冲突
+  (check-false (conf 'E1 (C 'E1 '(at E1 kitchen 1930 1955)) watch)))
 
 (test-case "冲突：视线（只看见某些人、门口进出名单）"
   ;; 负观察按容限两端各收缩 5 分钟（关于别人的容限），所以用较长的时段（与真相无关，只测规则）
@@ -289,3 +296,26 @@
   (check-pred hash? (hash-ref (hash-ref r3 'state) 'reveal))
   (check-equal? (code-of (λ () (handle-api-v1 "POST" (list "games" id "ask") (hasheq 'kind "self" 'npc p1 'slot 1)))) 409)
   (check-equal? (code-of (λ () (handle-api-v1 "GET" (list "games" "nope") #f))) 404))
+
+(test-case "指认凶手但证据不足：列出没被排除的人和原因"
+  (define cc (gen-case 2 5))
+  (define culprit (case1-culprit cc))
+  ;; 只问每个人自己在哪：所有非凶手都只有本人的说法
+  (define g (new-game1 cc))
+  (for ([p (person-ids cc)]) (ask1! g (list 'self p 1)))
+  (define gaps (accusation-gaps g culprit))
+  (check-pred pair? gaps)
+  (check-false (assq culprit gaps))
+  ;; 只问了本人：缺口里的人要么只有本人的说法，要么只有物证（物证不足以排除时记为 insufficient）
+  (for ([x gaps]) (check-not-false (memq (cdr x) '(self-only insufficient))))
+  (check-true (for/or ([x gaps]) (eq? (cdr x) 'self-only)))
+  ;; 按全知检查器的问题问完：没有缺口
+  (define g2 (new-game1 cc))
+  (for ([q (oracle-questions g2)]) (ask1! g2 q))
+  (check-equal? (accusation-gaps g2 culprit) '())
+  ;; web 接口的说明文字
+  (define-values (c0 st) (handle-api-v1 "POST" '("games") (hasheq 'npcs 5 'seed 2)))
+  (define-values (c1 r1) (handle-api-v1 "POST" (list "games" (hash-ref st 'id) "accuse") (hasheq 'npc (symbol->string culprit))))
+  (check-regexp-match #rx"没有被排除" (hash-ref (hash-ref r1 'result) 'text))
+  (check-equal? (length (hash-ref (hash-ref r1 'result) 'gaps))
+                (length (accusation-gaps (new-game1 cc) culprit))))

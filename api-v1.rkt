@@ -184,15 +184,33 @@
   (define npc (person-arg c (hash-ref b 'npc #f) "npc"))
   (define culprit? (eq? npc (case1-culprit c)))
   (define ok (accuse1! g npc))
+  (define gaps (if (and culprit? (not ok)) (accusation-gaps g npc) '()))
   (define r (hasheq 'kind "accuse" 'npc (sym npc) 'npc_name (person-name c npc) 'won ok
                     'text (cond [ok (if (>= (length (exposure-sources g npc)) EXPOSE-TO-WIN)
                                         "破案：他的行踪说法已被多方拆穿。"
                                         "破案：其他人都已被排除。")]
-                                [culprit? "证据不足：既没有排除其他所有人，也没有足够的拆穿。"]
-                                [else "指认错误。"])
+                                [culprit? (accuse-shortfall-text c g npc gaps)]
+                                [else (format "指认错误：~a不是凶手。" (person-name c npc))])
+                    'gaps (for/list ([x gaps])
+                            (hasheq 'person (sym (car x)) 'person_name (person-name c (car x))
+                                    'reason (sym (cdr x))))
                     'cost 0 'ap_used (game1-ap g)))
   (log! s r)
   r)
+
+;; 指认了凶手但证据不足时的说明：谁没被排除、为什么；拆穿差几个来源
+(define (accuse-shortfall-text c g z gaps)
+  (string-append
+   "证据不足。\n"
+   (string-join
+    (for/list ([x gaps])
+      (format "· ~a没有被排除：~a" (person-name c (car x))
+              (case (cdr x)
+                [(self-only) "你没有听到别人关于他去向的证词（他本人的话不算），需要别人的证词或物证。"]
+                [else "有别人的证词提到他，但还不足以说明他不可能在案发时段待够作案所需的时间。"])))
+    "\n")
+   (format "\n· 拆穿：~a的行踪说法被 ~a 个不同来源拆穿，需要 ~a 个。"
+           (person-name c z) (length (exposure-sources g z)) EXPOSE-TO-WIN)))
 
 (define (create-game b)
   (define n (hash-ref b 'npcs 5))

@@ -5,22 +5,23 @@
 ;;   (at 谁 节点 起 止)          谁在某处（说自己或说别人）
 ;;   (saw 谁 节点 起 止)         说话人看见谁在某处
 ;;   (saw-door 谁 房间 in|out 时刻)  说话人在走廊看见谁进 / 出某房间
-;;   (saw-only 节点 起 止 (人 ...))   说话人能看见该节点，期间除自己外只看见这些人
-;;   (saw-none 节点 起 止)            = (saw-only 节点 起 止 ())
-;;   (doors-only 房间 起 止 (人 ...)) 说话人在走廊看着该房间门口，期间进出的只有这些人
+;;   (saw-only 节点 起 止 ((人 起 止) ...))     说话人一直看得见该节点：期间除自己外在那里的人和各自的时段
+;;   (saw-none 节点 起 止)                       = (saw-only 节点 起 止 ())
+;;   (doors-only 房间 起 止 ((人 in|out 时刻) ...))  说话人一直看着该房间门口：期间全部的进出
+;;   名单项写成单独的人名（旧写法）时，saw-only 表示"整段都在"，doors-only 表示"对此人不作约束"
 ;;   (move 谁 从 到 时刻)        谁约在某时刻从一处出发去另一处
 ;; 容限 tol（分钟）只由声明种类决定：物证 0；关于自己 3；关于别人 8（含 saw-only / doors-only）。
 ;;
 ;; 每条声明对某个人的路径产生约束：
 ;;   in-c    在 [lo, hi] 每一分钟都位于 node（at / saw 按容限收缩：[起 + tol, 止 − tol]，非空时）
 ;;           收缩后为空（短暂停留、容限大）时改为 visit-c [起 − tol, 止 + tol]：至少在附近某时刻到过那里
-;;   out-c   在 [lo, hi] 每一分钟都不在 node（saw-only，对说话人和名单以外的每个人）
-;;   nocross-c 在 [lo, hi] 内没有进出房间 node（doors-only，对说话人和名单以外的每个人）
+;;   out-c   在 [lo, hi] 每一分钟都不在 node（saw-only：看守时段收缩容限后，减去此人被看见的时段放宽容限）
+;;   nocross-c 在 [lo, hi] 内没有进出房间 node（doors-only：看守时段收缩容限后，减去此人各次进出 ± 容限）
 ;;   visit-c 在 [lo, hi] 中至少有一分钟位于 node（saw-door、move，按容限放宽）
 ;; 判定：时间展开图上的可达性（节点 × 分钟，含通行途中的分钟），见 satisfiable?。
 ;; 两条声明冲突 = 各自可满足、合起来对某人不可满足。冲突种类只用于向玩家解释：
 ;;   evidence（涉及物证）> sight（涉及 saw-only / doors-only）> location（时间区间重叠）> travel（来不及走到）
-(require racket/list racket/match "map.rkt" "world.rkt")
+(require racket/list racket/match racket/math "map.rkt" "world.rkt")
 (provide (struct-out claim) (struct-out in-c) (struct-out out-c) (struct-out visit-c) (struct-out nocross-c)
          TOL-SELF TOL-OTHER default-tol datum->claim claim-subjects constraints-on
          satisfiable? path-satisfies? person-satisfiable? conflict-type obs->claim)
@@ -53,7 +54,12 @@
       [(list (and k (or 'at 'saw)) who n a b) (list k who n (hhmm->min a) (hhmm->min b))]
       [(list 'saw-door who r dir t) (list 'saw-door who r dir (hhmm->min t))]
       [(list 'saw-none n a b) (list 'saw-only n (hhmm->min a) (hhmm->min b) '())]
-      [(list (and k (or 'saw-only 'doors-only)) n a b ps) (list k n (hhmm->min a) (hhmm->min b) ps)]
+      [(list 'saw-only n a b ps)
+       (list 'saw-only n (hhmm->min a) (hhmm->min b)
+             (for/list ([e ps]) (match e [(list p c d) (list p (hhmm->min c) (hhmm->min d))] [(? symbol? p) p])))]
+      [(list 'doors-only n a b ps)
+       (list 'doors-only n (hhmm->min a) (hhmm->min b)
+             (for/list ([e ps]) (match e [(list p dir t) (list p dir (hhmm->min t))] [(? symbol? p) p])))]
       [(list 'move who from to t) (list 'move who from to (hhmm->min t))]))
   (claim id speaker cl (or tol (default-tol speaker cl source)) source))
 
@@ -69,8 +75,7 @@
 ;; 这条声明约束了哪些人的路径
 (define (claim-subjects c persons)
   (match (claim-clause c)
-    [(list (or 'saw-only 'doors-only) _ _ _ ps)
-     (filter (λ (p) (not (or (eq? p (claim-speaker c)) (memq p ps)))) persons)]
+    [(list (or 'saw-only 'doors-only) _ _ _ _) (remq (claim-speaker c) persons)]
     [cl (list (clause-subject cl))]))
 
 ;; 声明对 who 的路径产生的约束列表
@@ -87,10 +92,38 @@
      (list (visit-c from (- t tol) (+ t tol))
            (visit-c to (- t tol) (+ t tol (dist m from to))))]
     [(list (and k (or 'saw-only 'doors-only)) n a b ps)
-     (if (and (not (eq? who (claim-speaker c))) (not (memq who ps)) (<= (+ a tol) (- b tol)))
-         (list ((if (eq? k 'saw-only) out-c nocross-c) n (+ a tol) (- b tol)))
-         '())]
+     (cond
+       [(or (eq? who (claim-speaker c)) (> (+ a tol) (- b tol))) '()]
+       [else
+        ;; 此人"允许在场 / 允许进出"的时段（放宽容限）；旧写法的单独人名表示整段允许
+        (define allowed
+          (for/list ([e ps] #:when (eq? (if (symbol? e) e (car e)) who))
+            (match e
+              [(? symbol?) (cons -inf.0 +inf.0)]
+              [(list _ (? number? lo) hi) (cons (- lo tol) (+ hi tol))]
+              [(list _ _ t) (cons (- t tol) (+ t tol))])))
+        (for/list ([g (interval-minus (+ a tol) (- b tol) allowed)])
+          ((if (eq? k 'saw-only) out-c nocross-c) n (car g) (cdr g)))])]
     [_ '()]))
+
+;; [lo, hi]（整数分钟，闭区间）减去若干区间，返回剩下的闭区间列表
+(define (interval-minus lo hi cuts)
+  (define sorted (sort cuts < #:key car))
+  (let loop ([start lo] [cs sorted] [acc '()])
+    (cond
+      [(> start hi) (reverse acc)]
+      [(null? cs) (reverse (cons (cons start hi) acc))]
+      [else
+       (define c (car cs))
+       (cond
+         [(< (cdr c) start) (loop start (cdr cs) acc)]
+         [(> (car c) hi) (loop start '() acc)]
+         [else
+          (define gap-end (min hi (- (exact-ceiling* (car c)) 1)))
+          (define acc* (if (<= start gap-end) (cons (cons start gap-end) acc) acc))
+          (loop (max start (+ (exact-floor* (cdr c)) 1)) (cdr cs) acc*)])])))
+(define (exact-ceiling* x) (if (infinite? x) (if (> x 0) +inf.0 -inf.0) (inexact->exact (ceiling x))))
+(define (exact-floor* x) (if (infinite? x) (if (> x 0) +inf.0 -inf.0) (inexact->exact (floor x))))
 
 ;; ---------------------------------------------------------------- 可满足性
 ;; cs：约束列表；[t0, t1]：时间窗。opportunity：#f 或 (list 节点 lo hi d)，

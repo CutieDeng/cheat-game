@@ -10,7 +10,7 @@
 
 (define (person-name c who) (cond [(assq who (case1-persons c)) => cadr] [else (symbol->string who)]))
 (define (place-name c n) (name-of (case1-map c) n))
-(define (names c ps) (string-join (map (λ (p) (person-name c p)) ps) "、"))
+(define (entry-who e) (if (symbol? e) e (car e)))
 
 (define (claim->text c cl)
   (define sp (claim-speaker cl))
@@ -21,11 +21,28 @@
     [(list 'saw-door x r d t)
      (format "大约 ~a，我看见~a~a了~a。" (fmt-time t) (who x) (if (eq? d 'in) "进" "出") (place-name c r))]
     [(list 'saw-only n a b ps)
-     (format "~a–~a 我看得见~a，那里~a。" (fmt-time a) (fmt-time b) (place-name c n)
-             (if (null? ps) "除了我没有别人" (format "除了我只有~a" (names c ps))))]
+     (format "~a–~a 我一直看得见~a：~a" (fmt-time a) (fmt-time b) (place-name c n)
+             (if (null? ps)
+                 "除了我没有别人。"
+                 (string-append
+                  (string-join
+                   (for/list ([g (group-by entry-who ps)])
+                     (format "~a ~a 在" (person-name c (entry-who (car g)))
+                             (string-join (for/list ([e g])
+                                            (if (symbol? e) "一直"
+                                                (format "~a–~a" (fmt-time (second e)) (fmt-time (third e)))))
+                                          "、")))
+                   "；")
+                  "；没有别人。")))]
     [(list 'doors-only r a b ps)
-     (format "~a–~a 我看着~a的门口，~a。" (fmt-time a) (fmt-time b) (place-name c r)
-             (if (null? ps) "没人进出" (format "进出的只有~a" (names c ps))))]
+     (format "~a–~a 我一直看着~a的门口：~a" (fmt-time a) (fmt-time b) (place-name c r)
+             (if (null? ps)
+                 "没人进出。"
+                 (string-append
+                  (string-join (for/list ([e ps] #:unless (symbol? e))
+                                 (format "~a ~a~a" (person-name c (first e)) (fmt-time (third e)) (if (eq? (second e) 'in) "进" "出")))
+                               "，")
+                  "；没有别人进出。")))]
     [(list 'move x from to t)
      (format "大约 ~a，~a从~a去了~a。" (fmt-time t) (who x) (place-name c from) (place-name c to))]))
 

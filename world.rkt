@@ -8,8 +8,9 @@
 ;; 观察（精确，由路径推出）：
 ;;   (saw 观察者 某人 节点 起 止)      同一节点或经窗户看见某人在该节点
 ;;   (saw-door 观察者 某人 房间 in|out 时刻)  在走廊看见某人进 / 出相邻房间
-;;   (saw-only 观察者 节点 起 止 (人 ...))  能看见该节点内部，期间除自己外在那里的恰好是这些人（空表即"没看见任何人"）
-;;   (doors-only 观察者 房间 起 止 (人 ...)) 站在能看见该房间门口的走廊上，期间进出这扇门的恰好是这些人
+;;   (saw-only 观察者 节点 起 止 ((人 起 止) ...))   一段连续的看守（能看见该节点内部）：期间除自己外，在那里的人和各自在场的时段；
+;;                                                  名单外的人都不在，名单里的人在列出的时段以外不在
+;;   (doors-only 观察者 房间 起 止 ((人 in|out 时刻) ...))  一段连续的看守（站在能看见该房间门口的走廊上）：期间进出这扇门的全部事件
 (require racket/list racket/match "map.rkt")
 (provide (struct-out seg) (struct-out path) (struct-out obs)
          datum->path path-errors at-node door-events derive-observations obs->sexp route build-path)
@@ -17,7 +18,8 @@
 (struct seg (node in out) #:transparent)
 (struct path (who segs) #:transparent)
 ;; kind: saw | saw-door | saw-only | doors-only。
-;; saw-only / doors-only 的 subject 为在场 / 进出者列表（排序）；saw-door 的 dir 为 in/out，from = to = 时刻
+;; saw-only 的 subject 为 ((人 起 止) ...)，doors-only 的 subject 为 ((人 in|out 时刻) ...)；saw-door 的 dir 为 in/out，from = to = 时刻
+;; 2026-11-26 起负观察按"一段连续看守一条"记录：此前按"在场者集合不变"分段，过半片段短于 2 × 容限、不产生约束
 (struct obs (kind observer subject node from to dir) #:transparent)
 
 (define (datum->path d)
@@ -85,18 +87,24 @@
   (define saws
     (for/list ([r (merge-minutes saw-minutes)])
       (match r [(list (list o s b) f t) (obs 'saw o s b f t #f)])))
-  (define (sorted xs) (sort (remove-duplicates xs) symbol<?))
-  ;; saw-only：观察者能看见内部的每个节点，逐分钟记下除自己外在那里的人；在场者集合不变的连续分钟合并成一段
-  (define only-minutes
+  (define (entry<? x y) (or (symbol<? (car x) (car y)) (and (eq? (car x) (car y)) (< (cadr* x) (cadr* y)))))
+  (define (cadr* e) (if (number? (cadr e)) (cadr e) (caddr e)))
+  ;; saw-only：观察者能看见某节点内部的每一段连续时间为一条；记下这段时间里别人在该节点的时段
+  (define watch-minutes
     (for*/list ([o paths] [t (in-range t0 (add1 t1))]
                 [a (in-value (pos o t))] #:when a
                 [b (node-ids m)] #:when (sees-inside? m a b))
-      (cons (list (path-who o) b
-                  (sorted (for/list ([s paths] #:unless (eq? s o) #:when (eq? (pos s t) b)) (path-who s))))
-            t)))
+      (cons (list (path-who o) b) t)))
   (define onlys
-    (for/list ([r (merge-minutes only-minutes)])
-      (match r [(list (list o b ps) f t) (obs 'saw-only o ps b f t #f)])))
+    (for/list ([w (merge-minutes watch-minutes)])
+      (match-define (list (list o b) f t) w)
+      (define present
+        (for*/list ([s paths] #:unless (eq? (path-who s) o)
+                    [tt (in-range f (add1 t))] #:when (eq? (pos s tt) b))
+          (cons (list (path-who s)) tt)))
+      (obs 'saw-only o
+           (sort (for/list ([r (merge-minutes present)]) (match r [(list (list s) c d) (list s c d)])) entry<?)
+           b f t #f)))
   ;; doors-only：观察者在能看见某房间门口的走廊上的每一段时间，期间进出该门的人
   (define door-watch
     (for*/list ([o paths] [t (in-range t0 (add1 t1))]
@@ -107,10 +115,11 @@
     (for/list ([w (merge-minutes door-watch)])
       (match-define (list (list o r) f t) w)
       (obs 'doors-only o
-           (sorted (for*/list ([s paths] #:unless (eq? (path-who s) o)
-                               [ev (door-events m s)]
-                               #:when (and (eq? (first ev) r) (<= f (third ev) t)))
-                     (path-who s)))
+           (sort (for*/list ([s paths] #:unless (eq? (path-who s) o)
+                             [ev (door-events m s)]
+                             #:when (and (eq? (first ev) r) (<= f (third ev) t)))
+                   (list (path-who s) (second ev) (third ev)))
+                 entry<?)
            r f t #f)))
   ;; saw-door：事件发生时观察者站在能看见该门口的走廊上
   (define doors
@@ -129,8 +138,10 @@
   (match o
     [(obs 'saw o s n f t _) `(saw ,o ,s ,n ,(min->hhmm f) ,(min->hhmm t))]
     [(obs 'saw-door o s n f _ d) `(saw-door ,o ,s ,n ,d ,(min->hhmm f))]
-    [(obs 'saw-only o ps n f t _) `(saw-only ,o ,n ,(min->hhmm f) ,(min->hhmm t) ,ps)]
-    [(obs 'doors-only o ps n f t _) `(doors-only ,o ,n ,(min->hhmm f) ,(min->hhmm t) ,ps)]))
+    [(obs 'saw-only o ps n f t _)
+     `(saw-only ,o ,n ,(min->hhmm f) ,(min->hhmm t) ,(for/list ([e ps]) (list (first e) (min->hhmm (second e)) (min->hhmm (third e)))))]
+    [(obs 'doors-only o ps n f t _)
+     `(doors-only ,o ,n ,(min->hhmm f) ,(min->hhmm t) ,(for/list ([e ps]) (list (first e) (second e) (min->hhmm (third e)))))]))
 
 ;; 最短路的节点序列（含两端）
 (define (route m a b)

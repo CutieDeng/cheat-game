@@ -6,7 +6,8 @@
 ;;   自己的路径：每段端点各偏移 U[−3, 3]；停留 < 3 分钟的段以 p-skip-self 漏掉
 ;;   对别人的观察：端点各偏移 U[−5, 5]（= TOL-OTHER）；整条以 p-forget 不记得；
 ;;                 saw / saw-door 以 p-confuse 把地点记成"相近的同类地点"（同类且最短距离 ≤ 2）；
-;;                 saw-only / doors-only 名单中每个人以 p-miss 没注意到（从名单里漏掉）
+;;                 saw-only / doors-only：一段看守中，名单里的每个人以 p-miss 整个没注意到（他的各条记录都漏掉）；
+;;                 其余每条记录的时刻也各偏移 U[−5, 5]
 ;; 偏移 ≤ 容限，所以只有"记混地点"和"没注意到某人"会让诚实证词与真相冲突。
 (require racket/list racket/match "map.rkt" "world.rkt" "claims.rkt")
 (provide DEFAULT-NOISE sample-memory memory->claims clause->datum)
@@ -35,7 +36,13 @@
   (define (maybe-confuse n)
     (define cs (confusable m n))
     (if (and (pair? cs) (chance rng (N 'p-confuse))) (list-ref cs (random (length cs) rng)) n))
-  (define (thin ps) (filter (λ (_) (not (chance rng (N 'p-miss)))) ps))
+  ;; 按人漏看：先决定每个人是否被整个漏掉，再偏移留下的各条记录
+  (define (thin k ps)
+    (define kept (filter (λ (p) (not (chance rng (N 'p-miss)))) (remove-duplicates (map car ps))))
+    (for/list ([e ps] #:when (memq (car e) kept))
+      (match e
+        [(list p (? number? c) d) (let-values ([(c* d*) (span c d (N 'shift-other))]) (list p c* d*))]
+        [(list p dir t) (list p dir (clip (+ t (uniform rng (N 'shift-other)))))])))
   (for/hasheq ([p paths])
     (define who (path-who p))
     (define own
@@ -55,7 +62,7 @@
            (list 'saw-door s (maybe-confuse n) d (clip (+ f (uniform rng (N 'shift-other)))))]
           [(obs (and k (or 'saw-only 'doors-only)) _ ps n f t _)
            (define-values (a b) (span f t (N 'shift-other)))
-           (list k n a b (thin ps))])))
+           (list k n a b (thin k ps))])))
     (values who (append own seen))))
 
 ;; 记忆 → 声明（说话人即记忆的主人；容限按种类）
@@ -71,5 +78,11 @@
   (match cl
     [(list (and k (or 'at 'saw)) who n a b) (list k who n (min->hhmm a) (min->hhmm b))]
     [(list 'saw-door who n d t) (list 'saw-door who n d (min->hhmm t))]
-    [(list (and k (or 'saw-only 'doors-only)) n a b ps) (list k n (min->hhmm a) (min->hhmm b) ps)]
+    [(list (and k (or 'saw-only 'doors-only)) n a b ps)
+     (list k n (min->hhmm a) (min->hhmm b)
+           (for/list ([e ps])
+             (match e
+               [(list p (? number? c) d) (list p (min->hhmm c) (min->hhmm d))]
+               [(list p dir t) (list p dir (min->hhmm t))]
+               [(? symbol? p) p])))]
     [(list 'move who from to t) (list 'move who from to (min->hhmm t))]))

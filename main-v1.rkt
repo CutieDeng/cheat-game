@@ -102,11 +102,18 @@
          (define p (choose "指认谁？" people))
          (when p
            (accuse1! g p)
-           (printf "\n~a\n" (if (eq? (game1-status g) 'won)
-                                "破案。"
-                                (if (eq? p (case1-culprit c))
-                                    "证据不足：既没有排除其他所有人，也没有足够的拆穿。"
-                                    "指认错误。"))))])
+           (cond
+             [(eq? (game1-status g) 'won) (printf "\n破案。\n")]
+             [(eq? p (case1-culprit c))
+              (printf "\n证据不足。\n")
+              (for ([x (accusation-gaps g p)])
+                (printf "  · ~a没有被排除：~a\n" (person-name c (car x))
+                        (if (eq? (cdr x) 'self-only)
+                            "你没有听到别人关于他去向的证词（他本人的话不算）。"
+                            "有别人的证词提到他，但还不足以排除。")))
+              (printf "  · 拆穿：~a的行踪说法被 ~a 个不同来源拆穿，需要 ~a 个。\n"
+                      (person-name c p) (length (exposure-sources g p)) EXPOSE-TO-WIN)]
+             [else (printf "\n指认错误：~a不是凶手。\n" (person-name c p))]))])
       (loop)))
   (printf "\n==== 结局：~a（用了 ~a 行动点）====\n" (if (eq? (game1-status g) 'won) "破案" "失败") (game1-ap g))
   (unless (eq? (game1-status g) 'won)
