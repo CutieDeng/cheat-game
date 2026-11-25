@@ -47,15 +47,17 @@
       [(>= (hash-ref (pstate-score ps) top 0) LIES-TO-WIN) (list 'accuse top)]
       [(eq? (game-status g) 'accuse-only) (list 'accuse top)]
       [(< (- (ap-left g) (cost g 'ask)) (cost g 'accuse)) (list 'accuse top)]
-      [(findf (λ (t) (and (eq? (first t) (second t)) (zero? (hash-ref (game-asked g) t 0)))) topics)
+      [(findf (λ (t) (and (eq? (first t) (second t)) (zero? (hash-ref (game-asked g) t 0)) (affordable? g 'ask (first t)))) topics)
        => (λ (t) (cons 'ask t))]
       [(and (affordable? g 'present)
             (for*/first ([it items] [n npcs]
+                         #:when (affordable? g 'present n)
                          #:unless (hash-ref (pstate-presented ps) (cons n it) #f)
                          #:unless (and (number? it) (eq? (claim-speaker (find-claim g it)) n)))
               (list 'present n it)))
        => values]
-      [(findf (λ (t) (zero? (hash-ref (game-asked g) t 0))) topics) => (λ (t) (cons 'ask t))]
+      [(findf (λ (t) (and (zero? (hash-ref (game-asked g) t 0)) (affordable? g 'ask (first t)))) topics) => (λ (t) (cons 'ask t))]
+      [(not (affordable? g 'ask top)) (list 'accuse top)]
       [else (set! pressed (add1 pressed)) (list 'ask top top (modulo pressed nslots))]))
   (let loop ()
     (when (active? g) (apply-move! g ps (next-move)) (loop)))

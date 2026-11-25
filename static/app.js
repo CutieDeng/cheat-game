@@ -93,8 +93,16 @@ const npcName = (id) => {
   return n ? n.name : "—";
 };
 const playing = () => ui.state && ui.state.status === "playing" && !ui.busy;
-// 按引擎给的 can.{ask,present,accuse} 判断此刻付得起哪种动作（status 为 accuse-only 时只能指认）
-const can = (kind) => ui.state && ui.state.can && ui.state.can[kind] && !ui.busy;
+// 对当前对象做某种动作的行动点：基础费用 + 负压力附加费（只加在提问和出示上）
+const targetCost = (s, kind) => {
+  const n = s.npcs.find((x) => x.id === ui.target);
+  return s.costs[kind] + (kind !== "accuse" && n ? n.extra_cost : 0);
+};
+// 按引擎给的 can.{ask,present,accuse}（对某个人付得起）和对当前对象的费用判断（status 为 accuse-only 时只能指认）
+const can = (kind) => {
+  const s = ui.state;
+  return s && s.can && s.can[kind] && !ui.busy && targetCost(s, kind) <= s.ap_budget - s.ap_used;
+};
 
 function el(tag, cls, text) {
   const e = document.createElement(tag);
@@ -128,15 +136,20 @@ function render() {
     const li = el("li", n.id === ui.target ? "selected" : "");
     li.append(el("span", "", n.name));
     if (n.conflicts > 0) li.append(el("span", "count", `矛盾 ×${n.conflicts}`));
+    if (n.extra_cost > 0) {
+      const t = el("span", "count", `抵触 +${n.extra_cost} 点`);
+      t.title = "反复问同一个问题、出示无效证物会让对方抵触：之后对他提问和出示都要多付这些行动点（不会消退）";
+      li.append(t);
+    }
     li.addEventListener("click", () => { ui.target = n.id; ui.subject = n.id; render(); });
     return li;
   }), "");
 
   // 左栏：证物与证词，每项可出示给当前对象
   const presentBtn = (item) => {
-    const b = el("button", "", `向${target}出示 · ${s.costs.present} 点`);
+    const b = el("button", "", `向${target}出示 · ${targetCost(s, "present")} 点`);
     b.disabled = !can("present");
-    b.title = `出示消耗 ${s.costs.present} 行动点`;
+    b.title = `出示消耗 ${targetCost(s, "present")} 行动点；对方没有与之矛盾的说法时无效，并让他更抵触`;
     b.addEventListener("click", (ev) => { ev.stopPropagation(); present(item); });
     return b;
   };
@@ -187,7 +200,7 @@ function render() {
   fill($("topic-choices"), topics, "");
 
   // 提问消耗
-  $("ask-cost").textContent = `每问 ${s.costs.ask} 点`;
+  $("ask-cost").textContent = `每问 ${targetCost(s, "ask")} 点（同一问题第 5 次起会让对方抵触）`;
 
   // 右栏
   const used = s.ap_used, lim = s.ap_budget;

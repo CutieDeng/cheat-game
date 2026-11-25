@@ -162,7 +162,9 @@
    'phase (symbol->string (phase g)) 'phase_ap (phase-turn g)
    'npcs (for/list ([n (case-data-npcs cd)])
            (hasheq 'id (symbol->string n) 'name (nm n)
-                   'conflicts (for/sum ([c (game-exposed g)]) (if (eq? (conflict-npc c) n) 1 0))))
+                   'conflicts (for/sum ([c (game-exposed g)]) (if (eq? (conflict-npc c) n) 1 0))
+                   ;; 负压力附加费：对此人提问 / 出示多付的行动点
+                   'extra_cost (surcharge g n)))
    'slots (for/list ([i (vector-length (case-data-slots cd))])
             (hasheq 'index i 'label (slot-label cd i)))
    'evidence (for/list ([e (case-data-evidence cd)])
@@ -226,9 +228,9 @@
   (define g (sess-g s))
   (define cd (game-cd g))
   (unless (active? g) (fail 409 "这局已经结束（~a）" (game-status g)))
-  (unless (and (or (eq? kind 'accuse) (eq? (game-status g) 'playing)) (affordable? g kind))
-    (fail 409 "行动点不足：~a 需要 ~a 点，剩 ~a 点" kind (cost g kind) (ap-left g)))
   (define npc (npc-arg cd body 'npc))
+  (unless (and (or (eq? kind 'accuse) (eq? (game-status g) 'playing)) (affordable? g kind npc))
+    (fail 409 "行动点不足：~a 需要 ~a 点，剩 ~a 点" kind (cost g kind npc) (ap-left g)))
   (define args
     (case kind
       [(ask) (list (npc-arg cd body 'subject) (slot-arg cd body))]
@@ -236,7 +238,7 @@
       [(accuse) '()]))
   (define q (question-text g kind npc args))
   (define step (add1 (game-turn g)))
-  (define cost (hash-ref (game-costs g) kind))
+  (define paid (cost g kind npc))
   (define commits-before (hash-ref (game-commits g) npc '()))
   (define r
     (case kind
@@ -248,9 +250,9 @@
   (define rj (hasheq 'kind (public-response-kind (response-kind r))
                      'text (response->text cd npc r)
                      'clauses (map clause->string (response-clauses npc r retracted))
-                     'cost cost
+                     'cost paid
                      'claim_ids (for/list ([c (response-claims r)]) (claim-id c))))
-  (set-sess-log! s (cons (hasheq 'step step 'action (symbol->string kind) 'cost cost
+  (set-sess-log! s (cons (hasheq 'step step 'action (symbol->string kind) 'cost paid
                                  'ap_used (ap-used g)
                                  'npc (symbol->string npc) 'npc_name (person-name cd npc)
                                  'question q 'response rj)

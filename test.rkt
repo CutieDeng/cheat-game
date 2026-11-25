@@ -77,15 +77,25 @@
   (check-eq? (response-kind r) 'truth)
   (check-equal? (props r) (list (P 'pos 'E3 'L3 2000 2005))))
 
-(test-case "只靠重复提问不会说漏嘴：第 5 次起压力为负且递增"
+(test-case "只靠重复提问不会说漏嘴：第 5 次起不加正压力，改加负压力，负压力让对他的动作多付行动点"
   (define g (new-game cd #:seed 7))
-  (define ps
+  (define rows
     (for/list ([i 8])
+      (define ap0 (game-ap g))
       (define k (response-kind (ask! g 'E1 'E1 S1)))
       (check-not-eq? k 'slip)
-      (hash-ref (game-p-npc g) 'E1 0)))
-  ;; 第 2–4 次各 +5，第 5 次 -5，第 6 次 -10（截到 0）
-  (check-equal? (take ps 6) '(0 5 10 15 10 0))
+      (list (hash-ref (game-p-npc g) 'E1 0) (hash-ref (game-neg g) 'E1 0) (- (game-ap g) ap0))))
+  ;; 正压力：第 2–4 次各 +5，之后不变（不被负压力抵消）
+  (check-equal? (map first rows) '(0 5 10 15 15 15 15 15))
+  ;; 负压力：第 5 次起 +5×(r−3)：5、10、15、20 累加
+  (check-equal? (map second rows) '(0 0 0 0 5 15 30 50))
+  ;; 每次提问付的行动点 = 1 + floor(提问前的负压力 / 10)
+  (check-equal? (map third rows) '(1 1 1 1 1 1 2 4))
+  ;; 别人不受影响；出示无效也加负压力
+  (check-equal? (cost g 'ask 'E2) 1)
+  (present! g 'E2 (first (first (case-data-evidence cd))))
+  (check-equal? (hash-ref (game-neg g) 'E2 0) 10)
+  (check-equal? (cost g 'present 'E2) 3)
   (check-equal? (game-forget-log g) '()))
 
 (test-case "备选线：反复追问导致掩护层被遗忘、说漏嘴"
@@ -394,9 +404,12 @@
   (check-equal? (game-ap g) 3)
   (check-eq? (phase g) 'confront)          ; 对质阶段从 floor(2/3 × 4) = 2 点开始
   (check-exn exn:fail? (λ () (present! g 'E1 (first (first (case-data-evidence cd))))))
-  (ask! g 'E1 'E1 S1)
-  (check-eq? (game-status g) 'accuse-only)
+  ;; 出示无效让管家多了 1 点附加费：问他要 2 点，付不起；问厨师仍是 1 点
+  (check-equal? (cost g 'ask 'E1) 2)
   (check-exn exn:fail? (λ () (ask! g 'E1 'E1 S1)))
+  (ask! g 'E2 'E2 S1)
+  (check-eq? (game-status g) 'accuse-only)
+  (check-exn exn:fail? (λ () (ask! g 'E2 'E2 S1)))
   (accuse! g 'E2)
   (check-eq? (game-status g) 'lost)
   (check-equal? (game-ap g) 4)

@@ -51,6 +51,14 @@
     (exit 1))
   (define g (new-game cd #:seed (seed)))
   (define npcs (for/list ([n (case-data-npcs cd)]) (cons (person-name cd n) n)))
+  ;; 提问 / 出示的对象：标出负压力附加费，只列付得起的人
+  (define (choose-target g prompt kind)
+    (choose prompt
+            (for/list ([n (case-data-npcs cd)] #:when (affordable? g kind n))
+              (cons (if (> (surcharge g n) 0)
+                        (format "~a（~a 点，含抵触附加 ~a 点）" (person-name cd n) (cost g kind n) (surcharge g n))
+                        (person-name cd n))
+                    n))))
   (define slots (for/list ([i (vector-length (case-data-slots cd))]) (cons (slot-label cd i) i)))
   (printf "《~a》\n~a\n" (case-data-title cd) (case-data-briefing cd))
   (let loop ()
@@ -69,7 +77,7 @@
         [(#f) (exit 0)]
         [(notes) (show-notes g)]
         [(ask)
-         (define npc (choose "询问谁？" npcs))
+         (define npc (choose-target g "询问谁？" 'ask))
          (define subj (and npc (choose "关于谁？" npcs)))
          (define slot (and subj (choose "问什么？" (append (for/list ([s slots]) (cons (format "~a 在哪里" (car s)) (cdr s)))
                                                           (list (cons "和被害人的关系" 'rel))))))
@@ -77,7 +85,7 @@
            (printf "\n~a\n" (response->text cd npc (ask! g npc subj slot)))
            (show-debug g npc))]
         [(present)
-         (define npc (choose "向谁出示？" npcs))
+         (define npc (choose-target g "向谁出示？" 'present))
          (define items
            (append (for/list ([e (case-data-evidence cd)]) (cons (evidence->note cd e) (car e)))
                    (for/list ([c (reverse (game-claims g))]) (cons (claim->note cd c) (claim-id c)))))

@@ -19,19 +19,25 @@
 (define P-CONFLICT-TOPIC 35)
 (define P-REPEAT-NPC 5)
 (define P-REPEAT-TOPIC 15)
-;; 同一问题第 REPEAT-FREE+2 次及以后再问：压力改为负值，且每多问一次负值增大。
-;; 第 2–4 次提问仍按上面的正值计（保留"连续回避第 3 次说漏嘴"和"被拆穿一次后再问 3 次说漏嘴"）；
-;; 没有冲突或回避时，只靠重复提问最高到强度 30（对质阶段 50），达不到遗忘阈值；第 5 次起还会降低该 NPC 的总压力。
+;; 正压力与负压力是两个量，互不抵消（用户决定，2026-11-25）。
+;; 正压力（p-npc / p-topic）只增不减，决定强度和说漏嘴。
+;; 负压力（neg，按 NPC 累计，无上限、不衰减）不影响强度，只让玩家对这个 NPC 的提问和出示多付行动点：
+;;   附加费 = floor(负压力 / NEG-PER-AP)。
+;; 同一问题第 2–4 次提问加正压力（保留"连续回避第 3 次说漏嘴"和"被拆穿一次后再问 3 次说漏嘴"）；
+;; 第 REPEAT-FREE+2（=5）次起不再加正压力，改加负压力 NEG-REPEAT × (r − REPEAT-FREE)，每多问一次增大。
+;; 没有冲突或回避时，只靠重复提问最高到强度 30（对质阶段 50），达不到遗忘阈值。
 (define REPEAT-FREE 3)
-(define (repeat-deltas r)   ; r = 此前已问过的次数（≥1）
+(define NEG-REPEAT 5)
+(define NEG-NO-EFFECT 10)   ; 出示无效（对方没有与之矛盾的说法）
+(define NEG-PER-AP 10)
+(define (repeat-deltas r)   ; r = 此前已问过的次数（≥1）。返回 (values 正-npc 正-话题 负-npc)
   (if (<= r REPEAT-FREE)
-      (values P-REPEAT-NPC P-REPEAT-TOPIC)
-      (values (* (- P-REPEAT-NPC) (- r REPEAT-FREE)) (* (- P-REPEAT-TOPIC) (- r REPEAT-FREE)))))
+      (values P-REPEAT-NPC P-REPEAT-TOPIC 0)
+      (values 0 0 (* NEG-REPEAT (- r REPEAT-FREE)))))
 ;; 问到自己的行踪却回避（evade）：不形成承诺、无从拆穿，但侦探会更起疑。
 ;; 同一话题连续回避时，第 3 次提问的强度达到遗忘阈值，掩护说法被遗忘，只能说漏嘴。
 (define P-EVADE-NPC 15)
 (define P-EVADE-TOPIC 30)
-(define P-NO-EFFECT -10)
 (define VIEW-K 8)
 (define VIEW-RECENT 6)
 (define LIES-TO-WIN 2)
@@ -59,6 +65,7 @@
               layer            ; npc -> 当前掩护层下标；= 层数 时表示已回到真相
               p-npc            ; npc -> 压力
               p-topic          ; (list npc 主体 时间槽) -> 压力
+              neg              ; npc -> 负压力（无上限，不衰减，不抵消正压力）
               asked            ; (list npc 主体 时间槽) -> 被问次数
               forgotten        ; 掩护命题 id -> #t
               degraded         ; 观察 id -> #t
@@ -79,7 +86,7 @@
   (game cd rng 0 '() 1 0 costs budget
         (make-hasheq (for/list ([n npcs]) (cons n '())))
         (make-hasheq (for/list ([n npcs]) (cons n 0)))
-        (make-hasheq) (make-hash) (make-hash) (make-hash) (make-hash) (make-hash)
+        (make-hasheq) (make-hash) (make-hasheq) (make-hash) (make-hash) (make-hash) (make-hash)
         '() '() 'playing '() '() policy ext?))
 
 ;; ---------------------------------------------------------------- 压力与强度
@@ -89,9 +96,16 @@
 (define (turn-limit g) (game-budget g))
 (define (phase-turn g) (floor (* 2/3 (game-budget g))))
 (define (phase g) (if (>= (game-ap g) (phase-turn g)) 'confront 'normal))
-(define (cost g kind) (hash-ref (game-costs g) kind))
+;; 负压力附加费：对该 NPC 提问和出示时多付的行动点
+(define (surcharge g npc) (floor (/ (hash-ref (game-neg g) npc 0) NEG-PER-AP)))
+;; npc 为 #f 时按附加费最低的 NPC 计（"对某个人还付得起"）
+(define (cost g kind [npc #f])
+  (+ (hash-ref (game-costs g) kind)
+     (if (memq kind '(ask present))
+         (if npc (surcharge g npc) (apply min (map (λ (n) (surcharge g n)) (case-data-npcs (game-cd g)))))
+         0)))
 (define (ap-left g) (- (game-budget g) (game-ap g)))
-(define (affordable? g kind) (<= (cost g kind) (ap-left g)))
+(define (affordable? g kind [npc #f]) (<= (cost g kind npc) (ap-left g)))
 (define (active? g) (and (memq (game-status g) '(playing accuse-only)) #t))
 (define (intensity g npc subj slot)
   (min 100 (+ (* 1/2 (hash-ref (game-p-npc g) npc 0))
@@ -369,13 +383,14 @@
 (define (push-history! g npc q kind props)
   (set-game-history! g (cons (list (game-ap g) npc q kind props) (game-history g))))
 
-(define (start-turn! g kind)
+(define (start-turn! g kind npc)
   (unless (or (eq? (game-status g) 'playing)
               (and (eq? kind 'accuse) (eq? (game-status g) 'accuse-only)))
     (error 'engine "游戏已结束"))
-  (unless (affordable? g kind) (error 'engine "行动点不足：~a 需要 ~a，剩 ~a" kind (cost g kind) (ap-left g)))
+  (unless (affordable? g kind npc)
+    (error 'engine "行动点不足：~a ~a 需要 ~a，剩 ~a" kind npc (cost g kind npc) (ap-left g)))
   (set-game-turn! g (add1 (game-turn g)))
-  (set-game-ap! g (+ (game-ap g) (cost g kind))))
+  (set-game-ap! g (+ (game-ap g) (cost g kind npc))))
 ;; 提问和出示都付不起时结束：指认仍付得起则只剩指认（accuse-only），否则失败
 (define (end-turn! g)
   (when (and (eq? (game-status g) 'playing)
@@ -403,13 +418,14 @@
 ;; ---------------------------------------------------------------- 玩家动作
 
 (define (ask! g npc subj slot)
-  (start-turn! g 'ask)
+  (start-turn! g 'ask npc)
   (define key (list npc subj slot))
   (define r (hash-ref (game-asked g) key 0))
   (when (> r 0)
-    (define-values (dn dt) (repeat-deltas r))
+    (define-values (dn dt dneg) (repeat-deltas r))
     (hadd! (game-p-npc g) npc dn)
-    (hadd! (game-p-topic g) key dt))
+    (hadd! (game-p-topic g) key dt)
+    (hadd! (game-neg g) npc dneg))
   (hash-update! (game-asked g) key add1 0)
   (maybe-forget! g npc subj slot)
   (define q (list 'ask subj slot))
@@ -443,7 +459,7 @@
     (press-conflicts! g npc dedup)))
 
 (define (present! g npc item)
-  (start-turn! g 'present)
+  (start-turn! g 'present npc)
   (define props (item-props g item))
   (define raw
     (for*/list ([o (hash-ref (game-commits g) npc)] [p props]
@@ -461,7 +477,7 @@
     (cond
       [(and (null? found) (pair? raw)) (response 'already '())]
       [(null? found)
-       (hadd! (game-p-npc g) npc P-NO-EFFECT)
+       (hadd! (game-neg g) npc NEG-NO-EFFECT)
        (response 'no-effect '())]
       [else
        (set-game-exposed! g (append (game-exposed g) found))
@@ -533,7 +549,7 @@
       (admitted? g npc)))
 
 (define (accuse! g npc)
-  (start-turn! g 'accuse)
+  (start-turn! g 'accuse npc)
   (define cd (game-cd g))
   (define culprit (case-data-culprit cd))
   (define result

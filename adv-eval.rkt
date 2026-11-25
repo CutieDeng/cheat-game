@@ -17,8 +17,10 @@
   (define slots (slots-overlapping cd (st-from crime) (st-to crime)))
   (let loop ([i 0])
     (when (eq? (game-status g) 'playing)
-      (if (convictable? g c) (accuse! g c)
-          (begin (ask! g c c (list-ref slots (modulo i (length slots)))) (loop (add1 i))))))
+      (cond [(convictable? g c) (accuse! g c)]
+            ;; 负压力附加费让追问付不起：只追问的玩家到此为止（未破案）
+            [(not (affordable? g 'ask c)) (void)]
+            [else (ask! g c c (list-ref slots (modulo i (length slots)))) (loop (add1 i))])))
   (game-status g))
 
 (define (won? r) (eq? 'won (hash-ref r 'status)))

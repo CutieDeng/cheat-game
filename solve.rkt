@@ -33,7 +33,7 @@
                         (map claim-id (reverse (game-claims g)))))
   ;; 先拆穿非凶手（解开目击者），凶手放最后
   (define order (append (remq (case-data-culprit cd) (case-data-npcs cd)) (list (case-data-culprit cd))))
-  (for*/first ([npc order] [it items]
+  (for*/first ([npc order] #:when (affordable? g 'present npc) [it items]
                #:unless (hash-ref ps (cons npc it) #f)
                #:unless (and (number? it) (eq? (claim-speaker (find-claim g it)) npc))
                #:when (for*/or ([o (hash-ref (game-commits g) npc)] [p (item-props g it)])
@@ -69,9 +69,10 @@
               (move! (list 'present (car c) (cdr c)) (present! g (car c) (cdr c)))
               (loop))]
         [(not (affordable? g 'ask)) 'stuck]
-        [(or (findf (λ (t) (not (hash-ref asked t #f))) self-topics)
+        [(or (findf (λ (t) (and (not (hash-ref asked t #f)) (affordable? g 'ask (first t)))) self-topics)
              ;; 观察持有者的回答取决于他当前的掩护层，层变了可以再问
              (for/first ([t obs-topics]
+                         #:when (affordable? g 'ask (first t))
                          #:unless (hash-ref asked (cons t (layer-of g (first t))) #f))
                (cons t (layer-of g (first t)))))
          => (λ (key)
@@ -83,6 +84,7 @@
               (when (and (eq? (response-kind r) 'evade) (< (hash-ref (game-asked g) t 0) 3))
                 (hash-remove! asked key))
               (loop))]
+        [(and press? (not (affordable? g 'ask culprit))) 'stuck]
         [press?
          (define t (list culprit culprit (list-ref press-slots (modulo pressed (length press-slots)))))
          (set! pressed (add1 pressed))

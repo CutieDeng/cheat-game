@@ -49,12 +49,24 @@
   (argmax (λ (n) (hash-ref (pstate-score ps) n 0)) npcs))
 
 ;; 返回 (list 'ask npc subj slot) | (list 'present npc item) | (list 'accuse npc)
+;; 选出的提问 / 出示付不起（对方负压力附加费太高）时：改问附加费最低的人自己的某个时段，仍付不起就指认
 (define (player-move g ps)
+  (define mv (player-move* g ps))
+  (define (ok? m) (or (eq? (car m) 'accuse) (affordable? g (car m) (cadr m))))
+  (cond
+    [(ok? mv) mv]
+    [else
+     (define npcs (case-data-npcs (game-cd g)))
+     (define cheap (argmin (λ (n) (surcharge g n)) npcs))
+     (define alt (list 'ask cheap cheap (random (vector-length (case-data-slots (game-cd g))) (pstate-rng ps))))
+     (if (ok? alt) alt (list 'accuse (best-suspect ps npcs)))]))
+
+(define (player-move* g ps)
   (define cd (game-cd g))
   (define npcs (case-data-npcs cd))
   (define top (best-suspect ps npcs))
   (define unasked (filter (λ (k) (zero? (hash-ref (game-asked g) k 0))) (all-topics g)))
-  (define cands (present-candidates g ps))
+  (define cands (filter (λ (c) (affordable? g 'present (car c))) (present-candidates g ps)))
   ;; 作案地点与时段是公开信息：有人自己说案发时在作案地点，直接指认
   (define crime (case-data-crime cd))
   (define self-placed
@@ -76,7 +88,7 @@
      (if (or (null? (items g)) (not (affordable? g 'present)) (zero? (random 2 (pstate-rng ps))))
          (cons 'ask (pick ps (all-topics g)))
          (list 'present (pick ps npcs) (car (pick ps (items g)))))]
-    [(and (pair? cands) (affordable? g 'present)) (cons 'present (let ([c (pick ps cands)]) (list (car c) (cdr c))))]
+    [(pair? cands) (cons 'present (let ([c (pick ps cands)]) (list (car c) (cdr c))))]
     ;; 追问回避：有人说不清自己某时段在哪，且这个问题问过不到 3 次，就再问
     [(for/first ([h (reverse (game-history g))]
                  #:when (eq? (fourth h) 'evade)
