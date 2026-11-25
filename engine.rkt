@@ -1,0 +1,471 @@
+#lang racket/base
+;; 引擎：游戏状态、合法动作枚举、规则策略、压力与强度、受控遗忘、视图组装
+(require racket/list racket/match "kb.rkt")
+(provide (all-defined-out))
+
+;; ---------------------------------------------------------------- 参数
+
+(define TURN-LIMIT 30)
+(define PHASE-TURN 20)          ; 从第 20 轮起进入对质阶段
+(define PHASE-BONUS 20)
+(define FORGET-THRESHOLD 60)
+(define P-CONFLICT-NPC 25)
+(define P-CONFLICT-TOPIC 35)
+(define P-REPEAT-NPC 5)
+(define P-REPEAT-TOPIC 15)
+(define P-NO-EFFECT -10)
+(define VIEW-K 8)
+(define VIEW-RECENT 6)
+(define LIES-TO-WIN 2)
+
+;; ---------------------------------------------------------------- 结构
+
+;; speaker: NPC 符号。kind: cover truth slip retract confess
+(struct claim (id turn speaker prop kind) #:transparent)
+;; own: 该 NPC 的承诺（claim）；other: 证物符号或另一条 claim
+(struct conflict (npc own other type from to) #:transparent)
+;; 合法动作。props 是要说出的命题
+(struct action (kind props exposing?) #:transparent)
+;; 返回给 UI 的结果
+(struct response (kind claims) #:transparent)
+
+(struct game (cd rng
+              [turn #:mutable] [claims #:mutable] [next-id #:mutable]
+              commits          ; npc -> (listof claim)，当前仍坚持的声明
+              layer            ; npc -> 当前掩护层下标；= 层数 时表示已回到真相
+              p-npc            ; npc -> 压力
+              p-topic          ; (list npc 主体 时间槽) -> 压力
+              asked            ; (list npc 主体 时间槽) -> 被问次数
+              forgotten        ; 掩护命题 id -> #t
+              degraded         ; 观察 id -> #t
+              processed        ; (list npc 主体 时间槽) -> #t，已做过遗忘判定
+              [exposed #:mutable]
+              [history #:mutable]     ; 新的在前：(list turn npc q kind props)
+              [status #:mutable]      ; playing won lost
+              [view-sizes #:mutable]  ; 新的在前
+              [forget-log #:mutable]  ; 新的在前
+              policy))
+
+(define (new-game cd #:seed [seed 1] #:policy [policy rule-policy])
+  (define rng (make-pseudo-random-generator))
+  (parameterize ([current-pseudo-random-generator rng]) (random-seed seed))
+  (define npcs (case-data-npcs cd))
+  (game cd rng 0 '() 1
+        (make-hasheq (for/list ([n npcs]) (cons n '())))
+        (make-hasheq (for/list ([n npcs]) (cons n 0)))
+        (make-hasheq) (make-hash) (make-hash) (make-hash) (make-hash) (make-hash)
+        '() '() 'playing '() '() policy))
+
+;; ---------------------------------------------------------------- 压力与强度
+
+(define (hadd! h k delta) (hash-set! h k (max 0 (+ (hash-ref h k 0) delta))))
+(define (phase g) (if (>= (game-turn g) PHASE-TURN) 'confront 'normal))
+(define (intensity g npc subj slot)
+  (min 100 (+ (* 1/2 (hash-ref (game-p-npc g) npc 0))
+              (* 1/2 (hash-ref (game-p-topic g) (list npc subj slot) 0))
+              (if (eq? (phase g) 'confront) PHASE-BONUS 0))))
+
+;; ---------------------------------------------------------------- 掩护层与知识
+
+(define (cover-layers g npc) (hash-ref (case-data-cover (game-cd g)) npc '()))
+(define (layer-of g npc) (hash-ref (game-layer g) npc))
+(define (at-truth-layer? g npc) (>= (layer-of g npc) (length (cover-layers g npc))))
+(define (forgotten? g id) (hash-ref (game-forgotten g) id #f))
+(define (self-truth g npc) (truth-of (game-cd g) npc))
+
+;; 当前掩护层：(listof (cons id st))，id = (list 'cover npc 层 序号)
+(define (current-cover g npc)
+  (define l (layer-of g npc))
+  (define layers (cover-layers g npc))
+  (if (< l (length layers))
+      (for/list ([s (list-ref layers l)] [j (in-naturals)]) (cons (list 'cover npc l j) s))
+      '()))
+
+;; NPC 当前对自己行踪的说法（回到真相层时就是真相）
+(define (self-story g npc)
+  (if (at-truth-layer? g npc) (self-truth g npc) (map cdr (current-cover g npc))))
+
+;; NPC 对 subj 在 [f,t) 的知识：(listof (list prop via))
+(define (known-about g npc subj f t)
+  (define cd (game-cd g))
+  (if (eq? npc subj)
+      (for*/list ([s (self-truth g npc)] [c (in-value (clip s f t))] #:when c)
+        (list (prop 'pos c 'exact) #f))
+      (for*/list ([k (case-data-knowledge cd)]
+                  #:when (eq? (kitem-owner k) npc)
+                  #:when (eq? (st-agent (prop-st (kitem-prop k))) subj)
+                  [c (in-value (clip (prop-st (kitem-prop k)) f t))] #:when c)
+        (define pol (prop-pol (kitem-prop k)))
+        (if (hash-ref (game-degraded g) (kitem-id k) #f)
+            (list (prop pol (widen-to-slots cd c) 'approx) (kitem-via k))
+            (list (prop pol c 'exact) (kitem-via k))))))
+
+(define (commit-props g npc) (map claim-prop (hash-ref (game-commits g) npc)))
+(define (consistent? g npc props)
+  (define cs (commit-props g npc))
+  (for*/and ([p props] [c cs]) (not (conflict-kind p c))))
+
+;; 说出这条观察是否会暴露自己当时的位置
+(define (exposing? g npc via s)
+  (and via
+       (let ([me (prop 'pos (st npc via (st-from s) (st-to s)) 'exact)])
+         (or (not (consistent? g npc (list me)))
+             (for/or ([c (self-story g npc)]) (and (conflict-kind me (prop 'pos c 'exact)) #t))))))
+
+;; ---------------------------------------------------------------- 合法动作
+
+(define (legal-answers g npc subj slot)
+  (define-values (f t) (slot-range (game-cd g) slot))
+  (define self? (eq? npc subj))
+  (define known (known-about g npc subj f t))
+  (define truth-props (map first known))
+  (define lying? (and self? (not (at-truth-layer? g npc))))
+  (define cover-items
+    (if lying?
+        (filter (λ (c) (> (overlap-range (cdr c) f t) 0)) (current-cover g npc))
+        '()))
+  (define cover-props
+    (for/list ([c cover-items] #:unless (forgotten? g (car c)))
+      (prop 'pos (clip (cdr c) f t) 'exact)))
+  (define slip? (ormap (λ (c) (forgotten? g (car c))) cover-items))
+  (define truth-exposing?
+    (if lying?
+        ;; 真话与当前掩护层（含已遗忘部分）在本时间槽内有冲突才算暴露
+        (for*/or ([p truth-props] [c cover-items])
+          (and (conflict-kind p (prop 'pos (clip (cdr c) f t) 'exact)) #t))
+        (for/or ([k known]) (exposing? g npc (second k) (prop-st (first k))))))
+  (if slip?
+      ;; 掩护说法已被遗忘：只能说出实情
+      (list (action 'slip truth-props #f))
+  (append
+   (if (and lying? (pair? cover-props) (consistent? g npc cover-props))
+       (list (action 'cover cover-props #f))
+       '())
+   (if (and (pair? truth-props) (consistent? g npc truth-props))
+       (list (action 'truth truth-props truth-exposing?))
+       '())
+   (list (action 'unknown '() #f)))))
+
+(define (legal-reactions g npc found)
+  (define cd (game-cd g))
+  (define own-false?
+    (for/or ([c found]) (not (prop-true? cd (claim-prop (conflict-own c))))))
+  (define n (length (cover-layers g npc)))
+  (define l (layer-of g npc))
+  (define can-retract?
+    (and own-false? (< l n)
+         (or (< (add1 l) n) (not (eq? npc (case-data-culprit cd))))))
+  (append (if own-false? '() (list (action 'insist '() #f)))
+          (if can-retract? (list (action 'retract '() #f)) '())
+          (list (action 'refuse '() #f))))
+
+;; ---------------------------------------------------------------- 规则策略
+
+;; 策略接口：(policy view actions) -> action，只能从 actions 中选
+(define PRIORITY '(slip cover truth unknown insist retract refuse))
+(define (rule-policy view actions)
+  (define ok (filter (λ (a) (not (and (eq? (action-kind a) 'truth) (action-exposing? a))))
+                     actions))
+  (for/or ([k PRIORITY]) (findf (λ (a) (eq? (action-kind a) k)) ok)))
+
+;; ---------------------------------------------------------------- 遗忘
+
+(define (revealed? g npc k)
+  (define kp (kitem-prop k))
+  (for/or ([c (game-claims g)])
+    (define p (claim-prop c))
+    (and (eq? (claim-speaker c) npc)
+         (eq? (prop-pol p) (prop-pol kp))
+         (eq? (st-agent (prop-st p)) (st-agent (prop-st kp)))
+         (eq? (st-loc (prop-st p)) (st-loc (prop-st kp)))
+         (overlap? (prop-st p) (prop-st kp)))))
+
+;; cands: (listof (cons x 重叠长度))；取最长，并列时用 RNG
+(define (pick-max g cands)
+  (define best (apply max (map cdr cands)))
+  (define ties (filter (λ (c) (= (cdr c) best)) cands))
+  (car (list-ref ties (random (length ties) (game-rng g)))))
+
+(define (maybe-forget! g npc subj slot)
+  (define key (list npc subj slot))
+  (when (and (>= (intensity g npc subj slot) FORGET-THRESHOLD)
+             (not (hash-ref (game-processed g) key #f)))
+    (hash-set! (game-processed g) key #t)
+    (define-values (f t) (slot-range (game-cd g) slot))
+    (define cover-cands
+      (if (eq? npc subj)
+          (for/list ([c (current-cover g npc)]
+                     #:unless (forgotten? g (car c))
+                     #:when (> (overlap-range (cdr c) f t) 0))
+            (cons c (overlap-range (cdr c) f t)))
+          '()))
+    (define obs-cands
+      (for/list ([k (case-data-knowledge (game-cd g))]
+                 #:when (eq? (kitem-owner k) npc)
+                 #:when (eq? (st-agent (prop-st (kitem-prop k))) subj)
+                 #:when (> (overlap-range (prop-st (kitem-prop k)) f t) 0)
+                 #:unless (hash-ref (game-degraded g) (kitem-id k) #f)
+                 #:when (or (not (kitem-critical? k)) (revealed? g npc k)))
+        (cons k (overlap-range (prop-st (kitem-prop k)) f t))))
+    (cond
+      [(pair? cover-cands)
+       (define c (pick-max g cover-cands))
+       (hash-set! (game-forgotten g) (car c) #t)
+       (set-game-forget-log! g (cons (list (game-turn g) 'forget npc (car c)) (game-forget-log g)))]
+      [(pair? obs-cands)
+       (define k (pick-max g obs-cands))
+       (hash-set! (game-degraded g) (kitem-id k) #t)
+       (set-game-forget-log! g (cons (list (game-turn g) 'degrade npc (kitem-id k)) (game-forget-log g)))])))
+
+;; ---------------------------------------------------------------- 内部操作
+
+(define (new-claim! g speaker p kind)
+  (define c (claim (game-next-id g) (game-turn g) speaker p kind))
+  (set-game-next-id! g (add1 (game-next-id g)))
+  (set-game-claims! g (cons c (game-claims g)))
+  c)
+;; 命题相同的声明只保留最早那条
+(define (commit! g npc c)
+  (hash-update! (game-commits g) npc
+                (λ (cs) (if (for/or ([o cs]) (equal? (claim-prop o) (claim-prop c)))
+                            cs
+                            (append cs (list c))))))
+(define (find-claim g id) (findf (λ (c) (= (claim-id c) id)) (game-claims g)))
+
+(define (item-props g item)
+  (if (symbol? item)
+      (match (assq item (case-data-evidence (game-cd g)))
+        [(list _ _ p) (list p)]
+        [#f (error 'item-props "未知证物 ~a" item)])
+      (list (claim-prop (find-claim g item)))))
+
+(define (push-history! g npc q kind props)
+  (set-game-history! g (cons (list (game-turn g) npc q kind props) (game-history g))))
+
+(define (start-turn! g)
+  (unless (eq? (game-status g) 'playing) (error 'engine "游戏已结束"))
+  (set-game-turn! g (add1 (game-turn g))))
+(define (end-turn! g)
+  (when (and (eq? (game-status g) 'playing) (>= (game-turn g) TURN-LIMIT))
+    (set-game-status! g 'lost)))
+
+;; 冲突带来的话题压力，并做遗忘判定
+(define (press-conflicts! g npc found)
+  (hadd! (game-p-npc g) npc P-CONFLICT-NPC)
+  (define topics
+    (remove-duplicates
+     (for*/list ([c found]
+                 [slot (slots-overlapping (game-cd g) (conflict-from c) (conflict-to c))])
+       (list npc (st-agent (prop-st (claim-prop (conflict-own c)))) slot))))
+  (for ([k topics]) (hadd! (game-p-topic g) k P-CONFLICT-TOPIC))
+  (for ([k topics]) (apply maybe-forget! g k)))
+
+(define (record-view! g npc q)
+  (define v (assemble-view g npc q))
+  (set-game-view-sizes! g (cons (token-count v) (game-view-sizes g)))
+  v)
+
+;; ---------------------------------------------------------------- 玩家动作
+
+(define (ask! g npc subj slot)
+  (start-turn! g)
+  (define key (list npc subj slot))
+  (when (> (hash-ref (game-asked g) key 0) 0)
+    (hadd! (game-p-npc g) npc P-REPEAT-NPC)
+    (hadd! (game-p-topic g) key P-REPEAT-TOPIC))
+  (hash-update! (game-asked g) key add1 0)
+  (maybe-forget! g npc subj slot)
+  (define q (list 'ask subj slot))
+  (define view (record-view! g npc q))
+  (define a ((game-policy g) view (legal-answers g npc subj slot)))
+  (define cs (for/list ([p (action-props a)]) (new-claim! g npc p (action-kind a))))
+  (case (action-kind a)
+    [(cover truth) (for ([c cs]) (commit! g npc c))]
+    [(slip) (register-slip! g npc cs)])
+  (push-history! g npc q (action-kind a) (action-props a))
+  (end-turn! g)
+  (response (action-kind a) cs))
+
+;; 说漏嘴：与自身承诺冲突的部分自动计为被揭穿
+(define (register-slip! g npc cs)
+  (define found
+    (for*/list ([o (hash-ref (game-commits g) npc)]
+                [c cs]
+                [k (in-value (conflict-kind (claim-prop o) (claim-prop c)))] #:when k
+                #:unless (for/or ([e (game-exposed g)])
+                           (and (eq? (conflict-own e) o) (claim? (conflict-other e))
+                                (eq? (claim-kind (conflict-other e)) 'slip))))
+      (define-values (f t) (overlap-bounds (prop-st (claim-prop o)) (prop-st (claim-prop c))))
+      (conflict npc o c k f t)))
+  ;; 同一条承诺只记一次
+  (define dedup (remove-duplicates found (λ (a b) (eq? (conflict-own a) (conflict-own b)))))
+  (when (pair? dedup)
+    (set-game-exposed! g (append (game-exposed g) dedup))
+    (press-conflicts! g npc dedup)))
+
+(define (present! g npc item)
+  (start-turn! g)
+  (define props (item-props g item))
+  (define raw
+    (for*/list ([o (hash-ref (game-commits g) npc)] [p props]
+                [k (in-value (conflict-kind (claim-prop o) p))] #:when k)
+      (define-values (f t) (overlap-bounds (prop-st (claim-prop o)) (prop-st p)))
+      (conflict npc o item k f t)))
+  (define found
+    (filter (λ (c) (not (for/or ([e (game-exposed g)])
+                          (and (eq? (conflict-own e) (conflict-own c))
+                               (equal? (conflict-other e) item)))))
+            raw))
+  (define q (list 'present item))
+  (define result
+    (cond
+      [(and (null? found) (pair? raw)) (response 'already '())]
+      [(null? found)
+       (hadd! (game-p-npc g) npc P-NO-EFFECT)
+       (response 'no-effect '())]
+      [else
+       (set-game-exposed! g (append (game-exposed g) found))
+       (press-conflicts! g npc found)
+       (define view (record-view! g npc q))
+       (define a ((game-policy g) view (legal-reactions g npc found)))
+       (if (eq? (action-kind a) 'retract)
+           (response 'retract (do-retract! g npc found))
+           (response (action-kind a) '()))]))
+  (push-history! g npc q (response-kind result) (map claim-prop (response-claims result)))
+  (end-turn! g)
+  result)
+
+;; 改口：进入下一层，撤回与新说法冲突的承诺，说出新说法在冲突时间槽内的部分
+(define (do-retract! g npc found)
+  (define cd (game-cd g))
+  (hash-update! (game-layer g) npc add1)
+  (define story (for/list ([s (self-story g npc)]) (prop 'pos s 'exact)))
+  (hash-update! (game-commits g) npc
+                (λ (cs) (filter (λ (c) (not (for/or ([p story]) (conflict-kind (claim-prop c) p))))
+                                cs)))
+  (define slots
+    (remove-duplicates
+     (append-map (λ (c) (slots-overlapping cd (conflict-from c) (conflict-to c))) found)))
+  (define-values (f t)
+    (values (apply min (for/list ([i slots]) (let-values ([(a b) (slot-range cd i)]) a)))
+            (apply max (for/list ([i slots]) (let-values ([(a b) (slot-range cd i)]) b)))))
+  (for/list ([p story]
+             #:when (> (overlap-range (prop-st p) f t) 0))
+    (define c (new-claim! g npc (prop 'pos (clip (prop-st p) f t) 'exact) 'retract))
+    (commit! g npc c)
+    c))
+
+(define (exposed-lies g npc)
+  (for/list ([c (game-exposed g)]
+             #:when (eq? (conflict-npc c) npc)
+             #:unless (prop-true? (game-cd g) (claim-prop (conflict-own c))))
+    c))
+
+;; 凶手自己说过：案发时段在作案地点（含说漏嘴；不含认罪本身）
+(define (admitted? g npc)
+  (define c (case-data-crime (game-cd g)))
+  (and (eq? npc (st-agent c))
+       (for/or ([cl (game-claims g)])
+         (define p (claim-prop cl))
+         (and (eq? (claim-speaker cl) npc)
+              (not (eq? (claim-kind cl) 'confess))
+              (eq? (prop-pol p) 'pos) (eq? (prop-mode p) 'exact)
+              (eq? (st-agent (prop-st p)) npc)
+              (eq? (st-loc (prop-st p)) (st-loc c))
+              (overlap? (prop-st p) c)))))
+
+;; 定罪条件：被揭穿的谎言达到 LIES-TO-WIN 条，或凶手自己承认案发时在作案地点
+(define (convictable? g npc)
+  (or (>= (length (exposed-lies g npc)) LIES-TO-WIN)
+      (admitted? g npc)))
+
+(define (accuse! g npc)
+  (start-turn! g)
+  (define cd (game-cd g))
+  (define culprit (case-data-culprit cd))
+  (define result
+    (cond
+      [(and (eq? npc culprit) (convictable? g npc))
+       (set-game-status! g 'won)
+       (response 'confess
+                 (for/list ([s (self-truth g npc)])
+                   (new-claim! g npc (prop 'pos s 'exact) 'confess)))]
+      [(eq? npc culprit)
+       (set-game-status! g 'lost)
+       (response 'insufficient '())]
+      [else
+       (set-game-status! g 'lost)
+       (response 'wrong '())]))
+  (push-history! g npc (list 'accuse) (response-kind result) '())
+  result)
+
+;; ---------------------------------------------------------------- 视图组装
+
+(define (prop->sexp p)
+  (define s (prop-st p))
+  `(,(prop-pol p) ,(st-agent s) ,(st-loc s)
+    ,(quotient (st-from s) 60) ,(remainder (st-from s) 60)
+    ,(quotient (st-to s) 60) ,(remainder (st-to s) 60)
+    ,(prop-mode p)))
+
+(define (take-up-to lst k) (take lst (min k (length lst))))
+
+(define (assemble-view g npc q)
+  (define cd (game-cd g))
+  (define-values (subj slot)
+    (match q
+      [(list 'ask s sl) (values s sl)]
+      [(list 'present item)
+       (define s (prop-st (car (item-props g item))))
+       (values (st-agent s) (car (slots-overlapping cd (st-from s) (st-to s))))]))
+  (define-values (f t) (slot-range cd slot))
+  (define commits (hash-ref (game-commits g) npc))
+  (define (on-topic? c)
+    (define s (prop-st (claim-prop c)))
+    (and (eq? (st-agent s) subj) (> (overlap-range s f t) 0)))
+  (define (score c)
+    (define s (prop-st (claim-prop c)))
+    (+ (if (eq? (st-agent s) subj) 2 0)
+       (if (> (overlap-range s f t) 0) 1 0)
+       (/ (claim-turn c) 1000)))
+  (define ranked
+    (take-up-to (sort (filter (λ (c) (not (on-topic? c))) commits) > #:key score) VIEW-K))
+  (define presented
+    (remove-duplicates
+     (for*/list ([h (game-history g)]
+                 #:when (eq? (second h) npc)
+                 #:when (eq? (car (third h)) 'present)
+                 [p (item-props g (cadr (third h)))])
+       (prop->sexp p))))
+  (define recent
+    (take-up-to (filter (λ (h) (eq? (second h) npc)) (game-history g)) VIEW-RECENT))
+  (define role
+    (cond [(eq? npc (case-data-culprit cd)) 'culprit]
+          [(pair? (cover-layers g npc)) 'secret]
+          [else 'honest]))
+  `(view
+    (self ,npc) (role ,role) (layer ,(layer-of g npc))
+    (prefix (truth ,@(map (λ (s) (prop->sexp (prop 'pos s 'exact))) (self-truth g npc)))
+            (cover ,@(for/list ([layer (cover-layers g npc)])
+                       (map (λ (s) (prop->sexp (prop 'pos s 'exact))) layer)))
+            ,@(if (eq? role 'culprit)
+                  `((crime ,(prop->sexp (prop 'pos (case-data-crime cd) 'exact))))
+                  '()))
+    (flags (intensity ,(round (intensity g npc subj slot)))
+           (repeat ,(hash-ref (game-asked g) (list npc subj slot) 0))
+           (phase ,(phase g)))
+    (pinned
+     (conflicts ,@(for/list ([c (game-exposed g)] #:when (eq? (conflict-npc c) npc))
+                    `(,(conflict-type c) ,(prop->sexp (claim-prop (conflict-own c))))))
+     (presented ,@presented)
+     (commits ,@(map (λ (c) (prop->sexp (claim-prop c))) (filter on-topic? commits))))
+    (ranked ,@(map (λ (c) (prop->sexp (claim-prop c))) ranked))
+    (recent ,@(for/list ([h recent]) `(,(car (third h)) ,(fourth h) ,@(map prop->sexp (fifth h)))))
+    (q ,@(match q
+           [(list 'present item) `(present ,@(map prop->sexp (item-props g item)))]
+           [_ q]))))
+
+(define (token-count v)
+  (cond [(pair? v) (+ (token-count (car v)) (token-count (cdr v)))]
+        [(null? v) 0]
+        [else 1]))
