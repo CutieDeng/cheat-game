@@ -32,8 +32,8 @@
   (printf "《~a》\n~a\n\n~a\n" (case1-title c) (case1-briefing c) (map->text c))
   (match-define (list cn clo chi cd) (case1-crime c))
   (printf "作案需要在~a连续停留至少 ~a 分钟。\n" (place-name c cn) cd)
-  (printf "胜利条件：指认凶手，并且满足其一——\n  （1）其他每个人都已被排除：只用别人的证词和物证（被排除者自己的话、被指认者的话都不算），他在案发时段不可能在~a待够 ~a 分钟；\n  （2）凶手关于自己行踪的说法，已被至少 ~a 个不同来源（不同的人的证词或不同的物证）出示后证明矛盾。\n"
-          (place-name c cn) cd EXPOSE-TO-WIN)
+  (printf "胜利条件：指认凶手，并且满足其一——\n  （1）其他每个人都已被排除：只用别人的证词和物证（被排除者自己的话、被指认者的话都不算），他在案发时段不可能在~a待够 ~a 分钟；\n  （2）凶手关于自己行踪的说法，已被至少 ~a 个不同来源（不同的人的证词或不同的物证）出示后证明矛盾；\n  （3）凶手亲口说过案发时段他在~a。\n"
+          (place-name c cn) cd EXPOSE-TO-WIN (place-name c cn))
   (printf "行动点：提问 ~a，出示 ~a，指认 ~a；预算 ~a。\n"
           (hash-ref COSTS1 'ask) (hash-ref COSTS1 'present) (hash-ref COSTS1 'accuse) (game1-budget g))
   (when debug?

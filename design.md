@@ -128,6 +128,7 @@ KB 分层：
 | `engine-v1.rkt` `liar-v1.rkt` `detective-v1.rkt` `text-v1.rkt` `main-v1.rkt` | v1 M3：对局、规则规划器、全知检查器与公开信息侦探、文本、终端菜单（`racket main-v1.rkt --seed 3 --npcs 5 [--debug]`）。评测 `racket detective-v1.rkt --seeds 30`，记录 `runs/det1-v1.txt`（M3）、`runs/det1-v3.txt`（加入拆穿法、容限 5 之后） |
 | `budget1.rkt` | v1 预算标定：公开信息侦探所需行动点分布与各预算下胜率。`racket budget1.rkt --seeds 100`，记录 `runs/budget1-v1.txt` |
 | `api-v1.rkt` `http-error.rkt` `static/v1/` | v1 M4：地图版 web 接口（`/api/v1/`）与页面（`/v1/`）；`http-error.rkt` 是 server.rkt 与 api-v1.rkt 共用的错误类型 |
+| `verify-v1.rkt` `teacher-v1.rkt` `sft-gen.rkt` | v1 M5：故事校验器（V1–V4 与侦探存活分）、教师提示与解析（ds4-server）、批量生成模仿学习数据集。`racket sft-gen.rkt --seeds 30 --k 8`，记录 `runs/sft-v1.rktd`；`--summary` 汇总 |
 | `adv-eval.rkt` | 对抗可解性统计（strict / press / 只追问），记录写入 `runs/adv-v1.rktd` |
 | `ap-eval.rkt` | 行动点倍率标定：出示倍率 × 预算，比较检查器 / 启发式 / 穷举玩家。`racket ap-eval.rkt [--seeds N] [--big K] [--out 文件]` |
 | `gen-eval.rkt` | 批量生成 + 校验 + 检查器 + 启发式玩家评测，记录写入 `runs/gen-v1.rktd` |

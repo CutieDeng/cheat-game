@@ -128,7 +128,8 @@
       (define open (filter (λ (y) (not (excluded-now? g y))) ids))
       (define z (and (= (length open) 1) (car open)))
       (define exposed-enough
-        (and expose? (for/first ([y ids] #:when (>= (length (exposure-sources g y)) EXPOSE-TO-WIN)) y)))
+        (or (for/first ([y ids] #:when (admitted? g y)) y)      ; 有人自认案发时在作案地点
+            (and expose? (for/first ([y ids] #:when (>= (length (exposure-sources g y)) EXPOSE-TO-WIN)) y))))
       (define contra (and expose? (affordable1? g 'present) (find-contradiction)))
       (cond
         [(and z (can-win? g z)) (accuse1! g z)]

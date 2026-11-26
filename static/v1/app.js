@@ -75,7 +75,8 @@ function setState(s) {
 
 async function newGame(ev) {
   if (ev) ev.preventDefault();
-  const body = { npcs: Number($("npcs").value), planner: $("omni").checked ? "omni" : "local" };
+  const body = { npcs: Number($("npcs").value), planner: $("omni").checked ? "omni" : "local",
+                 manner: $("manner").checked ? "rule" : "full" };
   const seed = $("seed").value.trim();
   if (seed) body.seed = Number(seed);
   await run(async () => { setState(await api("POST", "games", body)); $("ending").hidden = true; });
@@ -187,7 +188,7 @@ function render() {
   $("ap-fill").style.width = `${Math.min(100, (100 * s.ap_used) / s.ap_budget)}%`;
   $("briefing").textContent = s.briefing;
   $("rule").textContent =
-    `作案需要在${s.crime.place_name}连续待至少 ${s.crime.min_minutes} 分钟。胜利：指认凶手，并且 (1) 其他每个人都已被排除——只用别人的证词和物证，他不可能在案发时段在${s.crime.place_name}待够这么久；或 (2) 凶手关于自己行踪的说法已被至少 ${s.expose_to_win} 个不同来源出示后证明矛盾。` +
+    `作案需要在${s.crime.place_name}连续待至少 ${s.crime.min_minutes} 分钟。胜利：指认凶手，并且 (1) 其他每个人都已被排除——只用别人的证词和物证，他不可能在案发时段在${s.crime.place_name}待够这么久；或 (2) 凶手关于自己行踪的说法已被至少 ${s.expose_to_win} 个不同来源出示后证明矛盾；或 (3) 凶手亲口说过案发时段他在${s.crime.place_name}。` +
     ` 消耗：提问 ${s.costs.ask}，出示 ${s.costs.present}，指认 ${s.costs.accuse}。`;
 
   // 在场者
@@ -275,8 +276,10 @@ function renderLog() {
     d.append(el("div", "meta", `已用 ${e.ap_used} 点 · ${e.npc_name}`));
     if (e.kind === "ask") {
       d.append(el("div", "q", e.question));
-      if (!e.answers.length) d.append(el("div", "a muted", `${e.npc_name}：「不清楚。」`));
-      for (const a of e.answers) d.append(el("div", "a", `${e.npc_name}：「${a.text}」`));
+      const tone = { curt: "（不耐烦）", perfunctory: "（敷衍，只说这个时段）" }[e.mode] || "";
+      if (e.mode === "refuse") d.append(el("div", "a conflict", `${e.npc_name}：「……我不想再说了。你去问别人吧。」`));
+      else if (!e.answers.length) d.append(el("div", "a muted", `${e.npc_name}${tone}：「不清楚。」`));
+      for (const a of e.answers) d.append(el("div", "a", `${e.npc_name}${tone}：「${a.text}」`));
     } else if (e.kind === "present") {
       d.append(el("div", "q", `向${e.npc_name}出示：${e.item_text}`));
       if (!e.conflicts.length) d.append(el("div", "a muted", `${e.npc_name}：「这和我说的不矛盾。」`));

@@ -1,7 +1,8 @@
 #lang racket/base
 ;; v1（地图版）JSON API。规则全部经 engine-v1.rkt；本文件只做参数校验、会话与 JSON 转换。
 ;;
-;;   POST /api/v1/games                 {npcs?: 4..8, seed?, planner?: "omni"|"local"}  -> 局面（201）
+;;   POST /api/v1/games                 {npcs?: 4..8, seed?, planner?: "omni"|"local", manner?: "full"|"rule"}  -> 局面（201）
+;;                                      manner "rule"：规则版态度（反复追问会不耐烦、敷衍、拒答），缺省 "full"
 ;;   GET  /api/v1/games/<id>            局面
 ;;   POST /api/v1/games/<id>/ask        {kind: "self"|"about"|"place", npc, arg?, slot}
 ;;                                      arg：about 时为人物 id，place 时为地点 id
@@ -150,6 +151,7 @@
   (define r (hasheq 'kind "ask" 'npc (sym npc) 'npc_name (person-name c npc)
                     'question (question->text c (λ (i) (slot-label g i)) q)
                     'answers (for/list ([cl cls]) (claim->json c cl))
+                    'mode (sym (last-answer-mode g))
                     'cost (hash-ref (game1-costs g) 'ask) 'ap_used (game1-ap g)))
   (log! s r)
   r)
@@ -186,9 +188,10 @@
   (define ok (accuse1! g npc))
   (define gaps (if (and culprit? (not ok)) (accusation-gaps g npc) '()))
   (define r (hasheq 'kind "accuse" 'npc (sym npc) 'npc_name (person-name c npc) 'won ok
-                    'text (cond [ok (if (>= (length (exposure-sources g npc)) EXPOSE-TO-WIN)
-                                        "破案：他的行踪说法已被多方拆穿。"
-                                        "破案：其他人都已被排除。")]
+                    'text (cond [ok (cond [(admitted? g npc) "破案：他自己说过案发时在作案地点。"]
+                                          [(>= (length (exposure-sources g npc)) EXPOSE-TO-WIN)
+                                           "破案：他的行踪说法已被多方拆穿。"]
+                                          [else "破案：其他人都已被排除。"])]
                                 [culprit? (accuse-shortfall-text c g npc gaps)]
                                 [else (format "指认错误：~a不是凶手。" (person-name c npc))])
                     'gaps (for/list ([x gaps])
@@ -210,7 +213,8 @@
                 [else "有别人的证词提到他，但还不足以说明他不可能在案发时段待够作案所需的时间。"])))
     "\n")
    (format "\n· 拆穿：~a的行踪说法被 ~a 个不同来源拆穿，需要 ~a 个。"
-           (person-name c z) (length (exposure-sources g z)) EXPOSE-TO-WIN)))
+           (person-name c z) (length (exposure-sources g z)) EXPOSE-TO-WIN)
+   (format "\n· 自认：你没有听到~a亲口说过案发时在~a。" (person-name c z) (place-name c (first (case1-crime c))))))
 
 (define (create-game b)
   (define n (hash-ref b 'npcs 5))
@@ -219,10 +223,13 @@
   (unless (and (exact-positive-integer? seed) (< seed 1000000)) (fail 400 "seed 应为 1–999999 的整数"))
   (define planner (hash-ref b 'planner "omni"))
   (unless (member planner '("omni" "local")) (fail 400 "planner 应为 omni 或 local"))
+  (define manner (hash-ref b 'manner "full"))
+  (unless (member manner '("full" "rule")) (fail 400 "manner 应为 full 或 rule"))
   (define-values (d attempts errs) (generate-case1 seed #:npcs n))
   (unless d (fail 500 "生成失败：~a" errs))
   (define c (datum->case1 d))
-  (define g (new-game1 c #:planner (if (equal? planner "omni") omniscient-planner local-planner)))
+  (define g (new-game1 c #:planner (if (equal? planner "omni") omniscient-planner local-planner)
+                       #:manner (if (equal? manner "rule") rule-manner full-manner)))
   (define s (sess (new-id) seed planner g (make-semaphore 1) '() (current-inexact-milliseconds)))
   (add-session! s)
   (state->json s))

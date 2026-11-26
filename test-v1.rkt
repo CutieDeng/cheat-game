@@ -1,8 +1,9 @@
 #lang racket/base
 ;; v1 M1 测试：地图、路径、观察推导、带容限的冲突。raco test test-v1.rkt
-(require rackunit racket/list "map.rkt" "world.rkt" "claims.rkt" "case1.rkt" "memory.rkt" "exclude.rkt" "gen-v1.rkt"
+(require rackunit racket/list racket/match "map.rkt" "world.rkt" "claims.rkt" "case1.rkt" "memory.rkt" "exclude.rkt" "gen-v1.rkt"
          "engine-v1.rkt" "liar-v1.rkt" "detective-v1.rkt" "text-v1.rkt"
-         "api-v1.rkt" (only-in "http-error.rkt" http-error? http-error-code) json)
+         "api-v1.rkt" (only-in "http-error.rkt" http-error? http-error-code) json
+         "verify-v1.rkt" "teacher-v1.rkt")
 
 (define c (load-case1 "cases/manor-v1.rktd"))
 (define m (case1-map c))
@@ -319,3 +320,77 @@
   (check-regexp-match #rx"没有被排除" (hash-ref (hash-ref r1 'result) 'text))
   (check-equal? (length (hash-ref (hash-ref r1 'result) 'gaps))
                 (length (accusation-gaps (new-game1 cc) culprit))))
+
+(test-case "回答方式与引擎契约：敷衍截到时段内，拒答最多连续 2 次，问过别人 2 点后不能再拒答"
+  (define cc (gen-case 2 5))
+  (define ids (person-ids cc))
+  (define p (car ids))
+  (define other (cadr ids))
+  ;; 总想拒答的策略
+  (define g (new-game1 cc #:manner (λ (g n q) 'refuse)))
+  (check-equal? (ask1! g (list 'self p 1)) '())
+  (check-eq? (last-answer-mode g) 'refuse)
+  (ask1! g (list 'self p 1))
+  (check-eq? (last-answer-mode g) 'refuse)
+  (ask1! g (list 'self p 1))
+  (check-eq? (last-answer-mode g) 'perfunctory)           ; 第 3 次：超过连续上限
+  (define g2 (new-game1 cc #:manner (λ (g n q) (if (eq? n p) 'refuse 'full))))
+  (ask1! g2 (list 'self p 1))
+  (ask1! g2 (list 'self other 1))
+  (ask1! g2 (list 'self other 2))                         ; 在别人身上花了 2 点
+  (ask1! g2 (list 'self p 1))
+  (check-eq? (last-answer-mode g2) 'perfunctory)
+  ;; 敷衍：每条子句都在问到的时段内，且仍与真相一致
+  (define g3 (new-game1 cc #:manner (λ (g n q) 'perfunctory)))
+  (match-define (cons lo hi) (slot-range g3 1))
+  (define m (case1-map cc))
+  ;; 只查诚实者（凶手的话来自假记忆，本来就可能与真相不符）
+  (for* ([who (remq (case1-culprit cc) ids)] [cl (ask1! g3 (list 'place who (car (node-ids m)) 1))])
+    (match (claim-clause cl)
+      [(list (or 'saw-only 'doors-only) _ a b _) (check-true (and (<= lo a) (<= b hi)))]
+      [(list (or 'at 'saw) _ _ a b) (check-true (and (<= lo a) (<= b hi)))]
+      [_ (void)])
+    (for ([y (claim-subjects cl ids)])
+      (check-true (path-satisfies? m (findf (λ (p) (eq? (path-who p) y)) (case1-paths cc)) (constraints-on m cl y)))))
+  ;; 规则版态度：同一问题反复问，回答方式逐步变差
+  (define g4 (new-game1 cc #:manner rule-manner))
+  (define modes (for/list ([i 8]) (ask1! g4 (list 'self p 1)) (last-answer-mode g4)))
+  (check-equal? (car modes) 'full)
+  (check-not-false (memq 'refuse modes))
+  (check-equal? (length (remove-duplicates modes)) (length (remove-duplicates (filter values modes)))))
+
+(test-case "校验器与故事解析：照实说出作案行程算自认、排最后；规则规划器的故事合法"
+  (define cc (gen-case 3 5))
+  (define who (case1-culprit cc))
+  (define truth-path (findf (λ (p) (eq? (path-who p) who)) (case1-paths cc)))
+  (define rt (verify-story cc truth-path))
+  (check-true (hash-ref rt 'admits))
+  (check-equal? (car (story-key rt)) 0)
+  (define rl (verify-story cc (local-planner cc)))
+  (check-true (hash-ref rl 'ok))
+  (check-false (hash-ref rl 'admits))
+  (check-equal? (car (story-key rl)) 1)
+  (check-true (key>? (story-key rl) (story-key rt)))
+  ;; 解析：前后有多余文字也能取出 (story ...)；格式错误返回字符串
+  (define base (seg-node (car (path-segs truth-path))))
+  (define p1 (parse-story cc (format "好的：(story (~a 1930 2100)) 以上" base)))
+  (check-pred path? p1)
+  (check-true (hash-ref (verify-story cc p1 #:detective? #f) 'ok))
+  (check-pred string? (parse-story cc "没有故事"))
+  (check-pred string? (parse-story cc "(story (r0 1930))"))
+  ;; 不可行的故事：V2 报错
+  (define bad (parse-story cc (format "(story (~a 1930 2000) (~a 2000 2100))" base base)))
+  (check-pred pair? (hash-ref (verify-story cc bad #:detective? #f) 'v2)))
+
+(test-case "自认法：凶手亲口说案发时在作案地点即可定罪；只问别人不算"
+  ;; 庄园地图版：管家的故事就是真实路径（含 20:04–20:18 在书房，案发窗口 20:05–20:20）
+  (define g (new-game1 c #:planner (λ (cc) (truth 'E1))))
+  (ask1! g (list 'self 'E1 1))                     ; 20:00–20:29：他说了书房那一段
+  (check-true (admitted? g 'E1))
+  (check-true (accuse1! g 'E1))
+  ;; 没听到他本人的说法：不算自认
+  (define g2 (new-game1 c #:planner (λ (cc) (truth 'E1))))
+  (ask1! g2 (list 'about 'E3 'E1 1))
+  (check-false (admitted? g2 'E1))
+  ;; 校验器：照实的故事被判为自认
+  (check-true (hash-ref (verify-story c (truth 'E1) #:detective? #f) 'admits)))
