@@ -1,2 +1,6 @@
 compiled/
 .DS_Store
+m6/*.pt
+m6/data.jsonl
+__pycache__/
+m6/shards-*/

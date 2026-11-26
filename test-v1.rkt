@@ -274,9 +274,9 @@
   (check-true (play 2))
   (check-false (play 1)))
 
-(test-case "预算：⌈1.2 · 人数²⌉"
-  (check-equal? (map budget-for-npcs '(4 5 6 8)) '(20 30 44 77))
-  (check-equal? (game1-budget (new-game1 (gen-case 1 6))) 44))
+(test-case "预算：8 · 人数 − 14"
+  (check-equal? (map budget-for-npcs '(4 5 6 8)) '(18 26 34 50))
+  (check-equal? (game1-budget (new-game1 (gen-case 1 6))) 34))
 
 (test-case "web API：建局、提问、出示、指认，响应都能转成 JSON；非法参数报 400，结束后再动作报 409"
   (define-values (c0 st) (handle-api-v1 "POST" '("games") (hasheq 'npcs 5 'seed 3)))
@@ -377,7 +377,14 @@
   (check-pred path? p1)
   (check-true (hash-ref (verify-story cc p1 #:detective? #f) 'ok))
   (check-pred string? (parse-story cc "没有故事"))
-  (check-pred string? (parse-story cc "(story (r0 1930))"))
+  (check-pred string? (parse-story cc "(story (r0))"))
+  ;; 新格式（地点 离开）：进入时刻按步行分钟推出，离开早于进入按经过处理
+  (define nb (car (car (neighbors (case1-map cc) base))))
+  (define w (edge-w (case1-map cc) base nb))
+  (define p2 (parse-story cc (format "(story (~a 2000) (~a 1900) (~a 2100))" base nb base)))
+  (check-equal? (map (λ (s) (list (seg-in s) (seg-out s))) (path-segs p2))
+                (list (list 1170 1200) (list (+ 1200 w) (+ 1200 w)) (list (+ 1200 w w) 1260)))
+  (check-true (hash-ref (verify-story cc p2 #:detective? #f) 'ok))
   ;; 不可行的故事：V2 报错
   (define bad (parse-story cc (format "(story (~a 1930 2000) (~a 2000 2100))" base base)))
   (check-pred pair? (hash-ref (verify-story cc bad #:detective? #f) 'v2)))

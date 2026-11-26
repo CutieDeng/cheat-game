@@ -43,8 +43,10 @@
 
 (define (full-manner g npc q) 'full)
 
-;; 预算 ⌈1.2 · 人数²⌉（用户决定 2026-11-25，依据 runs/budget1-v1.txt：公开信息侦探所需行动点约随人数平方增长）
-(define (budget-for-npcs n) (ceiling (* 6/5 n n)))
+;; 预算 8 · 人数 − 14（4/5/6/8 人 = 18/26/34/50；用户决定 2026-11-26，spec-v1.md §17）
+;; 目标：公开信息侦探对强凶手（M6 rl3 贪心）胜率约 60%，并让"凶手故事的好坏"影响胜负。
+;; 此前为 ⌈1.2 · 人数²⌉（20/30/44/77，2026-11-25）：8 人局下侦探只用排除法就能破 88% 的案，故事几乎不影响结果（§16.5）。
+(define (budget-for-npcs n) (- (* 8 n) 14))
 (define (default-budget1 c) (budget-for-npcs (length (person-ids c))))
 
 ;; 每段 SLOT-MIN 分钟，最后一段包含 t1

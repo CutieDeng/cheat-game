@@ -1,0 +1,95 @@
+it    1  4人 未拆穿 1.00 非法 0.00 AP 16.2  5人 未拆穿 0.61 非法 0.00 AP 23.9  6人 未拆穿 0.64 非法 0.02 AP 28.6  8人 未拆穿 0.41 非法 0.03 AP 44.9  pg +0.011 kl -0.0000  打分 19.2 s  共 21 s
+it    2  4人 未拆穿 0.83 非法 0.02 AP 17.5  5人 未拆穿 0.58 非法 0.05 AP 27.1  6人 未拆穿 0.50 非法 0.03 AP 30.6  8人 未拆穿 0.44 非法 0.03 AP 45.1  pg -0.484 kl 0.0001  打分 23.2 s  共 45 s
+user break
+  context...:user break
+   
+  context...:/Users/cutiedeng/Y2026/M11/D24/cheat-game/claims.rkt:
+   user breakuser break/Users/cutiedeng/Y2026/M11/D24/cheat-game/claims.rktuser break
+  context...::user break
+  context...:
+  context...:
+   164159
+   /Users/cutiedeng/Y2026/M11/D24/cheat-game/claims.rkt:user break:user breakuser breakuser breakTraceback (most recent call last):
+:
+  context...:
+  context...:  File "/Users/cutiedeng/Y2026/M11/D24/cheat-game/m6/rl.py", line 192, in <module>
+
+  context...:
+   
+  context...:131
+   /opt/homebrew/Cellar/racket@9/9.3.13.1/share/racket/collects/racket/private/for.rkt
+   
+  context...:
+   /Users/cutiedeng/Y2026/M11/D24/cheat-game/claims.rkt/Users/cutiedeng/Y2026/M11/D24/cheat-game/claims.rkt99/Users/cutiedeng/Y2026/M11/D24/cheat-game/claims.rkt::/Users/cutiedeng/Y2026/M11/D24/cheat-game/claims.rkt0:: : 131::
+   :
+   131: 703131/opt/homebrew/Cellar/racket@9/9.3.13.1/share/racket/collects/racket/private/for.rkt    main(ap.parse_args())
+::131::satisfiable?allowed?0
+   0/Users/cutiedeng/Y2026/M11/D24/cheat-game/claims.rktflags-at:
+   
+   0  File "/Users/cutiedeng/Y2026/M11/D24/cheat-game/m6/rl.py", line 122, in main
+: /Users/cutiedeng/Y2026/M11/D24/cheat-game/claims.rkt0/Users/cutiedeng/Y2026/M11/D24/cheat-game/claims.rkt: : :satisfiable?:703::131219:2131::satisfiable?2
+   : :/Users/cutiedeng/Y2026/M11/D24/cheat-game/claims.rkt00: satisfiable?:     res = scorer.score(reqs)
+0
+   
+   : /Users/cutiedeng/Y2026/M11/D24/cheat-game/claims.rkt/Users/cutiedeng/Y2026/M11/D24/cheat-game/claims.rkt  File "/Users/cutiedeng/Y2026/M11/D24/cheat-game/m6/rl.py", line 54, in score
+satisfiable?: : make-sequence:/Users/cutiedeng/Y2026/M11/D24/cheat-game/claims.rkt
+   conflict-typemake-sequencesatisfiable?satisfiable?/Users/cutiedeng/Y2026/M11/D24/cheat-game/claims.rkt
+   :
+   219/Users/cutiedeng/Y2026/M11/D24/cheat-game/claims.rkt:/Users/cutiedeng/Y2026/M11/D24/cheat-game/claims.rkt
+   219::131219::    return list(self.pool.map(self._one, reqs))
+:/opt/homebrew/Cellar/racket@9/9.3.13.1/share/racket/collects/racket/private/more-scheme.rkt:
+   0219/Users/cutiedeng/Y2026/M11/D24/cheat-game/claims.rkt  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/concurrent/futures/_base.py", line 608, in result_iterator
+0::369: :: 02190:0conflict-type:
+   :2179/Users/cutiedeng/Y2026/M11/D24/cheat-game/claims.rkt219conflict-type:: 
+   :: conflict-type0: :
+   :conflict-type0satisfiable?: 
+   conflict-type
+   
+   /Users/cutiedeng/Y2026/M11/D24/cheat-game/verify-v1.rkt131/Users/cutiedeng/Y2026/M11/D24/cheat-game/verify-v1.rkt: ::: 
+   22    yield fs.pop().result()
+:/Users/cutiedeng/Y2026/M11/D24/cheat-game/verify-v1.rkt0/Users/cutiedeng/Y2026/M11/D24/cheat-game/verify-v1.rkt/Users/cutiedeng/Y2026/M11/D24/cheat-game/verify-v1.rkt  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/concurrent/futures/_base.py", line 440, in result
+0conflict-typehash-ref!: 
+   
+   ::9/Users/cutiedeng/Y2026/M11/D24/cheat-game/detective-v1.rkt: :/Users/cutiedeng/Y2026/M11/D24/cheat-game/verify-v1.rkt: add!verify-story:22    self._condition.wait(timeout)
+78
+   ::2222:/Users/cutiedeng/Y2026/M11/D24/cheat-game/m6/score-server.rkt:0
+   :/Users/cutiedeng/Y2026/M11/D24/cheat-game/claims.rkt  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/threading.py", line 312, in wait
+:220satisfiable?0
+   :/Users/cutiedeng/Y2026/M11/D24/cheat-game/claims.rkt: ::verify-story13/Users/cutiedeng/Y2026/M11/D24/cheat-game/claims.rkt131
+   ::: 2192verify-story0
+   : body of (submod "/Users/cutiedeng/Y2026/M11/D24/cheat-game/m6/score-server.rkt" main):
+21922:: :/Users/cutiedeng/Y2026/M11/D24/cheat-game/m6/score-server.rkt
+   00detective-run!: :satisfiable?: :00
+       waiter.acquire()
+/Users/cutiedeng/Y2026/M11/D24/cheat-game/m6/score-server.rktconflict-typeKeyboardInterrupt
+/Users/cutiedeng/Y2026/M11/D24/cheat-game/claims.rkt
+   :13::/Users/cutiedeng/Y2026/M11/D24/cheat-game/verify-v1.rkt2:
+   : 0/Users/cutiedeng/Y2026/M11/D24/cheat-game/verify-v1.rkt219:: :: 0verify-storyverify-story
+   :: 22
+   verify-story22
+   body of (submod "/Users/cutiedeng/Y2026/M11/D24/cheat-game/m6/score-server.rkt" main)13
+   /Users/cutiedeng/Y2026/M11/D24/cheat-game/m6/score-server.rkt:/Users/cutiedeng/Y2026/M11/D24/cheat-game/m6/score-server.rkt13conflict-type/Users/cutiedeng/Y2026/M11/D24/cheat-game/m6/score-server.rktconflict-type:
+   2:
+   :/opt/homebrew/Cellar/racket@9/9.3.13.1/share/racket/collects/racket/private/more-scheme.rkt
+/Users/cutiedeng/Y2026/M11/D24/cheat-game/verify-v1.rkt:::0::369: :verify-story02
+   213: /Users/cutiedeng/Y2026/M11/D24/cheat-game/m6/score-server.rkt:
+   
+   13:body of (submod "/Users/cutiedeng/Y2026/M11/D24/cheat-game/m6/score-server.rkt" main): 2222verify-story
+   :hash-ref!
+   
+   body of (submod "/Users/cutiedeng/Y2026/M11/D24/cheat-game/m6/score-server.rkt" main)/Users/cutiedeng/Y2026/M11/D24/cheat-game/m6/score-server.rkt
+:body of (submod "/Users/cutiedeng/Y2026/M11/D24/cheat-game/m6/score-server.rkt" main)
+0
+   
+13/Users/cutiedeng/Y2026/M11/D24/cheat-game/detective-v1.rkt:: 13verify-story:body of (submod "/Users/cutiedeng/Y2026/M11/D24/cheat-game/m6/score-server.rkt" main):
+   2:
+2/Users/cutiedeng/Y2026/M11/D24/cheat-game/m6/score-server.rkt
+   
+   :78body of (submod "/Users/cutiedeng/Y2026/M11/D24/cheat-game/m6/score-server.rkt" main)
+body of (submod "/Users/cutiedeng/Y2026/M11/D24/cheat-game/m6/score-server.rkt" main)13:
+0:2
+   : detective-run!body of (submod "/Users/cutiedeng/Y2026/M11/D24/cheat-game/m6/score-server.rkt" main)
+
+   /Users/cutiedeng/Y2026/M11/D24/cheat-game/verify-v1.rkt:22:0: verify-story
+   /Users/cutiedeng/Y2026/M11/D24/cheat-game/m6/score-server.rkt:13:2
+   body of (submod "/Users/cutiedeng/Y2026/M11/D24/cheat-game/m6/score-server.rkt" main)

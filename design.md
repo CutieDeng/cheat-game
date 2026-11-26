@@ -129,6 +129,12 @@ KB 分层：
 | `budget1.rkt` | v1 预算标定：公开信息侦探所需行动点分布与各预算下胜率。`racket budget1.rkt --seeds 100`，记录 `runs/budget1-v1.txt` |
 | `api-v1.rkt` `http-error.rkt` `static/v1/` | v1 M4：地图版 web 接口（`/api/v1/`）与页面（`/v1/`）；`http-error.rkt` 是 server.rkt 与 api-v1.rkt 共用的错误类型 |
 | `verify-v1.rkt` `teacher-v1.rkt` `sft-gen.rkt` | v1 M5：故事校验器（V1–V4 与侦探存活分）、教师提示与解析（ds4-server）、批量生成模仿学习数据集。`racket sft-gen.rkt --seeds 30 --k 8`，记录 `runs/sft-v1.rktd`；`--summary` 汇总 |
+| `m6/export.rkt` `m6/net.py` `m6/eval.rkt` `m6/run.sh` `m6/run2.sh` | v1 M6：专用小网络（凶手故事）。导出凶手视角特征与教师候选 → PyTorch 训练指针 / 时刻解码网络（相邻性由解码屏蔽保证）→ 用校验器评测，对比教师与规则规划器。`bash m6/run.sh <标签>`，结果在 `runs/m6-<标签>.txt`；见 spec §16 |
+| `m6/rl.py` `m6/score-server.rkt` `m6/rl-run.sh` | v1 M6 强化学习：组内排名优势的 REINFORCE + KL；racket 打分进程并行跑校验器。`bash m6/rl-run.sh <标签> <初始 ckpt> --iters 100`；见 spec §16.1 |
+| `m6/budget-metric.rkt` `m6/eval-fresh.sh` | v1 M6：按对局预算（`budget-for-npcs`）算凶手胜率（读评测逐案结果）；在新测试集上评测一个 checkpoint。见 spec §16.3 |
+| `m6/eval-big.sh` | v1 M6：在 `m6/test-big.jsonl`（每种人数 100 案）上分片并行评测；`eval.rkt --from` 合并汇总。见 spec §16.4 |
+| `m6/attrib.rkt` `m6/attrib-run.sh` | v1 M6 逐案归因：正常侦探的破案路线 + 只用排除的侦探所需 AP，分类为凶手赢 / 结构性必输 / 因拆穿而输。见 spec §16.5 |
+| `m6/budget-sweep.rkt` `m6/balance-check.rkt` `m6/balance-run.sh` | v1 平衡：离线扫描预算（故事作用 = 强凶手胜率 − 局部规划器胜率）；真实预算下侦探对 4 种凶手实跑验证。见 spec §17 |
 | `adv-eval.rkt` | 对抗可解性统计（strict / press / 只追问），记录写入 `runs/adv-v1.rktd` |
 | `ap-eval.rkt` | 行动点倍率标定：出示倍率 × 预算，比较检查器 / 启发式 / 穷举玩家。`racket ap-eval.rkt [--seeds N] [--big K] [--out 文件]` |
 | `gen-eval.rkt` | 批量生成 + 校验 + 检查器 + 启发式玩家评测，记录写入 `runs/gen-v1.rktd` |

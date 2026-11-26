@@ -1,122 +1,42 @@
-目前项目已经打通了确定性符号内核与对抗可解性底座（分层 KB、时间区间冲突检测、压力与受控遗忘、网状多路径案件生成），但距离“所有 NPC 由深度学习模型驱动的完整侦探游戏”，还停留在规则引擎 + 外部大模型 Prompt 验证阶段。
+落地的关键只有一条铁律：反着 v1 的路走——先用本地 DeepSeek 跑出一个 400 行代码、你亲自玩起来就觉得“NPC 真的活了”的最小沙盒，再固化协议、批量采样、训专用小模型。 绝不再提前写规则规划器、生成器、预算标定和可解性证明。
 
-下图标出了完整架构中已经建成的底座（灰框）与亟待补齐的核心缺口（蓝框为最紧迫的 DL 运行时双核，浅灰为待补的闭环与交互层）：
+整套落地拆成 3 个阶段，每个阶段都有明确的止损验收线：
 
-<svg viewBox="0 0 680 280" xmlns="http://www.w3.org/2000/svg">
-  <style>
-    :root {
-      --lumi-ink: light-dark(#000000, #e0e0e0);
-      --lumi-muted: light-dark(#5f6368, #9aa0a6);
-      --lumi-dim: light-dark(#f2f0f0, #242528);
-      --lumi-container: light-dark(#e8e6e6, #2d2f33);
-      --lumi-outline: light-dark(#727676, #9a9b9c);
-      --lumi-accent-bg: light-dark(#dcf1ff, #192967);
-      --lumi-primary: light-dark(#3186ff, #9dd2ff);
-      --lumi-sans: 'Google Sans Flex', var(--font-family, 'Google Sans', sans-serif);
-      --lumi-mono: 'Google Sans Code', ui-monospace, monospace;
-    }
-    text { font-weight: 400; stroke: none; }
-    .t-l1 { font-family: var(--lumi-sans); font-size: 15px; fill: var(--lumi-ink); }
-    .t-l2 { font-family: var(--lumi-mono); font-size: 12px; font-style: italic; fill: var(--lumi-ink); }
-    .t-l4 { font-family: var(--lumi-sans); font-size: 12px; fill: var(--lumi-muted); }
-    .node-step { fill: var(--lumi-dim); stroke: none; }
-    .node-focal { fill: var(--lumi-accent-bg); stroke: var(--lumi-primary); stroke-width: 1.25; }
-    .node-store { fill: var(--lumi-container); stroke: var(--lumi-outline); stroke-width: 1; }
-    .edge-arrow { fill: none; stroke: var(--lumi-ink); stroke-width: 1.3; stroke-linecap: round; stroke-dasharray: 0 4; marker-end: url(#lumi-caret); }
-  </style>
-  <defs>
-    <marker id="lumi-caret" viewBox="0 0 10 10" refX="7.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" orient="auto">
-      <path d="M 3 1.2 L 7.5 5 L 3 8.8" fill="none" stroke="var(--lumi-ink)" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
-    </marker>
-  </defs>
+阶段 1：最小活体沙盒（先接本地 ds4-server，验证手感）
 
-  <rect class="node-store" x="20" y="24" width="164" height="80" rx="40"/>
-  <text class="t-l1" x="102" y="54" text-anchor="middle" dominant-baseline="central">符号引擎与 KB</text>
-  <text class="t-l4" x="102" y="76" text-anchor="middle" dominant-baseline="central">已建 · 缺观察/视线视图</text>
+直接在仓库里新开一个 v2/ 目录，写死 1 张最小地图（4 个房间：书房、走廊、厨房、花园；4 个 NPC：1 凶手、1 偷了怀表的管家、2 个普通目击者；2 件可移动物品：血刀、怀表），直接复用现有的 map.rkt 和 llm.rkt 调用逻辑。
 
-  <line class="edge-arrow" x1="192" y1="64" x2="248" y2="64"/>
+只需要写 4 个核心文件：
 
-  <rect class="node-focal" x="256" y="24" width="164" height="80" rx="40"/>
-  <text class="t-l1" x="338" y="54" text-anchor="middle" dominant-baseline="central">策略核 DL 模型</text>
-  <text class="t-l2" x="338" y="76" text-anchor="middle" dominant-baseline="central">缺口: 蒸馏 + CFG解码</text>
+文件	职责	关键设计
+v2/state.rkt	活体世界状态	用离散 Tick（玩家每行动 1 次推进 1 拍），存每个角色的 loc / carrying / goal / private-obs 和每件物品的 loc / hidden?
+v2/step.rkt	物理仲裁与“抓现场”	同一 Tick 同步结算：先判移动与视线——若玩家进入/窥视某房间时，房内 NPC 正在执行 take / hide / plant，立刻写入 red-handed 抓现行事件；若玩家在房内提问/亮证，触发同房广播小拍，让在场所有 NPC 立即决定是否插话或甩锅
+v2/teacher.rkt	DeepSeek 驱动每个 NPC	严格按角色裁剪局部视野（只给它眼前的人、物、自己听过的话和私心目标），让 ds4-server 直接输出结构化原语 + 一句简短台词，彻底废掉“选编号”
+v2/cli.rkt	终端试玩入口	玩家可执行：move（走动）、eavesdrop（走廊偷听）、search（搜房间）、ask / present（面向当前房间所有人发问或亮证）
 
-  <line class="edge-arrow" x1="428" y1="64" x2="484" y2="64"/>
+阶段 1 验收线：你自己在终端里走 3 局，能亲眼撞见至少一次“推门抓到凶手藏刀/管家藏表”，以及一次“把两人堵在同一房间对质时，一方撒谎被另一方当面插话拆台”。如果教师模型在这个沙盒里都演不出这种戏剧感，就立刻改原语和规则，绝不往下做训练。
 
-  <rect class="node-focal" x="492" y="24" width="164" height="80" rx="40"/>
-  <text class="t-l1" x="574" y="54" text-anchor="middle" dominant-baseline="central">表层台词渲染</text>
-  <text class="t-l2" x="574" y="76" text-anchor="middle" dominant-baseline="central">缺口: 替代 text.rkt</text>
+阶段 2：固化匿名 ABI + 批量教师自博弈采样
 
-  <rect class="node-store" x="20" y="176" width="164" height="80" rx="40"/>
-  <text class="t-l1" x="102" y="206" text-anchor="middle" dominant-baseline="central">案件生成与校验</text>
-  <text class="t-l4" x="102" y="228" text-anchor="middle" dominant-baseline="central">已建 · gen-net / solve</text>
+手感跑通后，把 v2/teacher.rkt 的输入输出压成极简、跨案件通用的匿名协议，这是专用小模型能泛化的前提：
 
-  <rect class="node-step" x="256" y="176" width="164" height="80" rx="40"/>
-  <text class="t-l1" x="338" y="206" text-anchor="middle" dominant-baseline="central">蒸馏与自博弈训练</text>
-  <text class="t-l4" x="338" y="228" text-anchor="middle" dominant-baseline="central">缺口 · rollout 偏移</text>
+1. 输入全匿名化（控制在 256–512 token 内）：
+  ⚬ 角色统一编成 E0..E7，房间 L0..L7，物品 I0..I3，完全剥离中文人名地名。
+  ⚬ 固定字段：[ROLE/GOAL] + [MAP_TOPOLOGY] + [MY_STATE] + [ROOM_OCCUPANTS] + [RECENT_OBS] + [ROOM_SPEECH]。
+2. 输出极简动词原语：
+  ⚬ 空间态：(move Lx) / (take Ix) / (hide Ix) / (plant Ix Lx) / (wait)
+  ⚬ 对质态：(answer ...) / (interject Ex ...) / (blame Ex ...) / (silent)
+3. 离线批量跑数据：
+  ⚬ 写一个轻量的自动侦探（会随机巡逻、听见动静就推门、抓到东西就找人对质），让本地 DeepSeek 同时扮演全部 NPC，基于随机化地图和角色分配批量跑 500–2000 局（利用离散 Tick 可以完全离线多进程并发）。
+  ⚬ 按结果筛选轨迹：剔除原地发呆和非法动作，重点保留“成功转移/嫁祸证物”“被抓现行后临场圆谎”“对质时有效拆台/甩锅”的决策片段作为 SFT / DPO 样本。
 
-  <rect class="node-step" x="492" y="176" width="164" height="80" rx="40"/>
-  <text class="t-l1" x="574" y="206" text-anchor="middle" dominant-baseline="central">玩家端与多NPC总线</text>
-  <text class="t-l4" x="574" y="228" text-anchor="middle" dominant-baseline="central">缺口 · CLI / 孤立审讯</text>
+阶段 3：训专用小模型 + 接入双系统运行时
 
-  <line class="edge-arrow" x1="102" y1="168" x2="102" y2="112"/>
-  <line class="edge-arrow" x1="574" y1="112" x2="574" y2="168"/>
-  <line class="edge-arrow" x1="484" y1="216" x2="428" y2="216"/>
-  <line class="edge-arrow" x1="338" y1="168" x2="338" y2="112"/>
-</svg>
+拿到清洗后的 (匿名局部状态 → 动作原语) 数据集后，专用小模型有两条路线可选：
 
+⚬ 路线 A（最快跑通，推荐先做）：拿 0.5B–1.5B 基座做微调，只训上面那套极短 S-expr 动作原语，推理时挂语法约束解码（GBNF / XGrammar）。优点是接上就能用、几乎零语法错误，单步 20–50ms，足够每 Tick 并发驱动 4–8 个 NPC。
+⚬ 路线 B（极致定制小模型）：如果你打算自己写专用小网络（几千万参数级），可以把输入编码成固定槽位的实体/房间状态向量，输出做成多头分类（verb_head + target_entity_head + target_loc_head），彻底跳过文本生成，推理压到 5ms 以内。
 
-按工程优先级与架构耦合度，当前项目需要补齐的差距集中在以下 5 个层面：
+台词层与策略核解耦：无论选哪条路线，专用小模型都只负责“决定干什么/说什么意图”；只有玩家在场听见的那一拍，才把动作原语交给台词渲染器（初期甚至可以用模板，后面再接一个小模型润色）转成自然语言，后台 NPC 的走动、藏刀、偷窥完全不消耗台词生成算力。
 
-层面	当前实现状态	核心差距	优先级
-视图信息与教师数据质量	assemble-view 只含自身行踪与掩护；教师思考未带来遗憾下降	输入缺自身观察与空间视线，导致模型无法判断编造安全性；rollout 存在对手与后续策略偏移	P0
-策略输出协议（ABI）与约束解码	llm.rkt 仅在枚举列表中选编号，依赖重试与规则回退	未实现“组装式多子句输出”，缺少运行时动态 CFG 约束解码，无法支撑低延迟小模型 0 幻觉输出	P0
-学生模型训练与实时推理	仅通过 HTTP 串行调用本地 DeepSeek V4 Flash（53–85s/步）	缺少轻量化学生模型架构、SFT/偏好蒸馏/RL 训练管线及亚秒级本地推理（含 KV-Cache 复用）	P1
-双系统演出层（Surface Realizer）	text.rkt 纯字符串模板拼接	缺少受压力/情绪/人设驱动的台词渲染模型，策略核与演出层之间缺少情绪与迟疑信号契约	P1
-世界观、多 NPC 交互与玩家端	单人轮询、仅 at/rel 命题、CLI 编号菜单	缺少多 NPC 同场对质/合谋总线、物理证物与移动耗时建模、玩家自然语言审讯前端与推理看板	P2
-
-1. 视图盲区与训练信号失真（最紧迫的根因）
-
-从 design.md 的 think-v3 / think-v4 评测数据看，教师模型目前有两个硬伤：一是不可拆穿的编造只有 2.9%–14.3% 标为 low（几乎把所有编造全标成高危），二是带思考分析的 A 组遗憾（0.048）与不带分析的 B 组（0.052）基本无差别。
-
-结合源码看，这不只是 Prompt 问题，而是输入契约和估值机制的结构性缺口：
-
-⚬ view 缺少决定推理成败的局部环境信息：在 engine.rkt 的 assemble-view 中，prefix 只放了 truth、cover、rels、hide 和 crime，既没有放入该 NPC 自己掌握的他人观察（knowledge），也没有放入 gen-net.rkt 生成的房间视线拓扑。NPC 连“20:00 厨房里其实有厨师”或“走廊能看见书房门口”都看不到，自然算不出哪个 fabricate 安全。
-⚬ 回放估值存在策略偏移：rollout.rkt 在评估某个动作时，后续步由固定规则 rule-policy 接管，侦探方也只是启发式玩家或全知检查器。这导致 think-v4 中 6 个得分最高的 fabricate 其实全都是可被拆穿的，高分只是因为弱对手拆穿慢。直接拿这套估值做蒸馏或 RL 奖励，会训出“专门针对弱启发式玩家钻空子”的畸形策略。
-⚬ 匿名句柄抽象未打通到模型侧：main.md 设计了匿名寄存器句柄（E0..E31, L0..L15）以实现新案件免重训，但 llm.rkt 和 think.rkt 仍把视图渲染为中文人名/地名喂给模型，解析时再反向查表转回符号。
-
-2. 模型 I/O 协议（ABI）与约束解码缺位
-
-当前 llm.rkt 依赖引擎先用 legal-answers 穷举所有合法选项，模型只输出一个选项编号。这种设计在真实游戏里扩展性会迅速触顶：
-
-⚬ 组装式回答尚未落地：design.md 末尾已经规划了让模型直接输出 1–3 个子句（(at ...) / (not-at ...) / (rel ...) / (retract ...)），但引擎侧的语法校验、临场编造的遗忘机制（把模型自己说过的假话从 view 中删除以诱发自相矛盾）和单句/多句组合的可解性检查都还没实现。
-⚬ 缺少运行时动态 CFG 约束解码：目前在 think.rkt 里，选项一多首次可解析率就掉到 45%–65%，只能靠把报错贴回给模型重试。一旦切到“组装式输出”或参数更小的学生模型，必须引入动态文法约束（如 llguidance / XGrammar），每轮根据当前合法实体 ID、时间槽和权限动态生成 Grammar Mask，在采样层把非法输出物理清零。
-
-3. 深度学习学生模型、训练闭环与实时推理
-
-目前仓库里还没有任何神经网络训练或推理代码，所有实验都跑在外部 ds4-server 上：
-
-⚬ 训练管线从零待建：需要建立“批量网状案件生成 → 教师轨迹采样 + 改进版 Rollout 筛选（Best-of-K / DPO / GRPO）→ 轻量策略模型微调”的完整数据与训练管线。
-⚬ 推理延迟高出游戏门槛两个数量级：当前思考模式单步耗时 53–85 秒，非思考模式也要 2.3 秒；真实审讯交互要求单轮端到端延迟压到 1 秒以内。这需要模型参数量下探（例如 0.5B–3B 专精策略模型或轻量状态模型），并结合 prefix（案件固定真相/掩护/视线）的 KV-Cache 前缀复用，每轮只增量计算动态的 flags、pinned、recent 和 q。
-⚬ 对抗可解性边界待收紧：net-v2 中仍有 3 例静态模型判可达、动态消融却 stuck 的边界案例尚未查明；且目前对抗检查只测了“单句不可拆穿编造”，还没覆盖“编造 + 回避 + 诬陷组合”的强对抗模型。
-
-4. 表层台词渲染与双系统解耦
-
-目前 text.rkt 是纯确定性模板，所有角色说话腔调完全一致，没有推理游戏的戏剧张力：
-
-⚬ 缺少 Surface Realizer（台词渲染模型）：需要按 main.md 的双系统思路，接入一个看不到案件真相的小语言模型，只接收 [角色人设卡] + [策略核定好的结构化命题] + [当前压力/阶段/是否说漏嘴] 来生成台词，从物理上杜绝“写台词时顺嘴剧透或胡编细节”。
-⚬ 演出信号契约缺失：engine.rkt 的 response 结构目前只含 (response kind claims)，没有向表现层暴露压力变化量、当前强度、策略模型的思考长度/熵值（可用于驱动角色的迟疑停顿、微表情或语音颤抖）。
-
-5. 多 NPC 博弈深度、世界模型与玩家端体验
-
-即使模型全部就位，玩法和产品层还有三块明显短板：
-
-⚬ 多 NPC 之间完全隔离：目前是玩家 1 对 1 轮询，缺少 main.md 提到的双轨消息总线。NPC 看不到其他人在对质中的发言，无法在引擎前置计算 [MEMORY_CONFLICT] 后触发实时插话、当面互咬、合谋圆谎或把锅甩给真凶。
-⚬ 推理维度偏单一：kb.rkt 只有 at（位置）和 rel（4 种静态动机）两种谓词，且不计算移动路程时间。要支撑更像侦探游戏的推理体验，后续需要扩展物品持有/转移、物理状态（门锁、凶器、现场痕迹）以及空间拓扑耗时约束。
-⚬ 玩家交互与可视化面板：main.rkt 仍是终端数字菜单。当案件扩展到 6–8 人网状结构时，纯文本笔记极难消化；既需要图形化的时间线/视线图/证据连线板，若想支持自由文本审讯，还需在前端加一层把自然语言映射到确定性查询指令的 NLU 解析器。
-
-建议的补齐顺序
-
-1. 先修视图与估值（低成本、高杠杆）：把 NPC 自身的 knowledge 和房间视线拓扑写进 assemble-view，重跑一次 think-eval，确认教师模型能真正区分“安全编造”与“可拆穿编造”，否则后面蒸馏全是噪声。
-2. 落组装式输出 + 约束解码：把 engine.rkt 从“选编号”切到“子句校验 + 临场谎言遗忘”，并在推理侧接上 CFG 约束解码，彻底消灭格式错误和重试开销。
-3. 打通最小学生模型闭环：用修改后的 rollout（最好配一个更强的侦探策略）在 gen-net 批量生成的数百个案件上合成轨迹，训出第一个轻量本地策略模型，验证延迟和博弈强度。
-4. 再补双系统演出与多 NPC 交互：接入隔离真相的台词渲染器，把压力/熵值接到台词风格上，最后扩展双轨消息总线与图形化推理界面。
+如果你想立刻动起来，最划算的第一步就是今天先搭出阶段 1 的 v2/ 最小原型（4 房间、4 角色、接你本地的 ds4-server），先亲手玩上一局看看“抓现场 + 插话甩锅”到底爽不爽。

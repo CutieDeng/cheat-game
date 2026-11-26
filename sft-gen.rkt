@@ -3,6 +3,7 @@
 ;;   racket sft-gen.rkt [--seeds 30] [--npcs "4 5 6 8"] [--k 8] [--temp 1.0] [--out runs/sft-v1.rktd]
 ;;   racket sft-gen.rkt --summary runs/sft-v1.rktd
 ;;   racket sft-gen.rkt --rescore runs/sft-v1.rktd --out 新文件   用当前校验器重新给已存的故事打分（不调用模型）
+;;   racket sft-gen.rkt --resume --seeds 250 --out runs/sft-v2.rktd   续跑：保留 --out 里已完成的案件（丢掉写了一半的最后一行），只跑缺的
 ;; 每个案件一行（逐行写入，中断后已写的保留）：
 ;;   (hasheq npcs seed prompt candidates best local omni)
 ;;   candidates：每个候选 (hasheq text story parse-error key ok v2 admits sources survival ms)
@@ -101,6 +102,7 @@
   (define out (make-parameter "runs/sft-v1.rktd"))
   (define sum (make-parameter #f))
   (define rescore (make-parameter #f))
+  (define resume (make-parameter #f))
   (command-line #:once-each
                 ["--seeds" s "每个人数的种子数" (seeds (string->number s))]
                 ["--npcs" s "人数列表" (npcs s)]
@@ -108,7 +110,8 @@
                 ["--temp" s "温度" (temp (string->number s))]
                 ["--out" f "输出 .rktd（逐行追加）" (out f)]
                 ["--summary" f "只汇总已有文件" (sum f)]
-                ["--rescore" f "重新打分已有文件，写到 --out" (rescore f)])
+                ["--rescore" f "重新打分已有文件，写到 --out" (rescore f)]
+                ["--resume" "续跑：不清空 --out，跳过其中已完成的 (人数, 种子)" (resume #t)])
   (cond
     [(sum) (summary (sum))]
     [(rescore)
@@ -117,8 +120,19 @@
        (λ () (for ([r rows]) (write (rescore-row r)) (newline))))
      (summary (out))]
     [else
-     (with-output-to-file (out) #:exists 'replace void)
-     (for* ([n (map string->number (regexp-split #rx" +" (npcs)))] [s (in-range 1 (add1 (seeds)))])
+     ;; 续跑：只保留能完整读出的行，重写文件（中断时最后一行可能只写了一半）
+     (define done-rows
+       (if (and (resume) (file-exists? (out)))
+           (with-input-from-file (out)
+             (λ () (let loop ([acc '()])
+                     (define x (with-handlers ([exn:fail? (λ (e) eof)]) (read)))
+                     (if (eof-object? x) (reverse acc) (loop (cons x acc))))))
+           '()))
+     (with-output-to-file (out) #:exists 'replace (λ () (for ([r done-rows]) (write r) (newline))))
+     (define done (for/hash ([r done-rows]) (values (cons (hash-ref r 'npcs) (hash-ref r 'seed)) #t)))
+     (when (resume) (printf "续跑：已完成 ~a 案\n" (hash-count done)))
+     (for* ([n (map string->number (regexp-split #rx" +" (npcs)))] [s (in-range 1 (add1 (seeds)))]
+            #:unless (hash-ref done (cons n s) #f))
        (define t0 (current-inexact-milliseconds))
        (define r (one-case n s (k) (temp)))
        (with-output-to-file (out) #:exists 'append (λ () (write r) (newline)))
