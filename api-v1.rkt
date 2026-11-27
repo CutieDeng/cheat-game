@@ -1,7 +1,9 @@
 #lang racket/base
 ;; v1（地图版）JSON API。规则全部经 engine-v1.rkt；本文件只做参数校验、会话与 JSON 转换。
 ;;
-;;   POST /api/v1/games                 {npcs?: 4..8, seed?, planner?: "omni"|"local", manner?: "full"|"rule"}  -> 局面（201）
+;;   POST /api/v1/games                 {npcs?: 4..8, seed?, planner?: "model"|"omni"|"local", manner?: "full"|"rule"}  -> 局面（201）
+;;                                      planner "model"（缺省）：凶手故事由 story-net.rkt 的网络生成（纯 Racket 推理）；
+;;                                      "omni" / "local"：规则规划器
 ;;                                      manner "rule"：规则版态度（反复追问会不耐烦、敷衍、拒答），缺省 "full"
 ;;   GET  /api/v1/games/<id>            局面
 ;;   POST /api/v1/games/<id>/ask        {kind: "self"|"about"|"place", npc, arg?, slot}
@@ -12,7 +14,7 @@
 ;; 局面不含排除状态（用户决定：由玩家自己判断）；对局结束后附 reveal（凶手、真实路径、凶手的故事）。
 (require racket/list racket/match racket/string racket/random
          "http-error.rkt" "map.rkt" "world.rkt" "claims.rkt" "case1.rkt"
-         "engine-v1.rkt" "liar-v1.rkt" "text-v1.rkt" "gen-v1.rkt")
+         "engine-v1.rkt" "liar-v1.rkt" "text-v1.rkt" "gen-v1.rkt" "story-net.rkt")
 (provide handle-api-v1)
 
 (define MAX-GAMES 1000)
@@ -221,14 +223,17 @@
   (unless (memv n '(4 5 6 7 8)) (fail 400 "npcs 应为 4–8"))
   (define seed (hash-ref b 'seed (λ () (random 1 100000 (make-pseudo-random-generator)))))
   (unless (and (exact-positive-integer? seed) (< seed 1000000)) (fail 400 "seed 应为 1–999999 的整数"))
-  (define planner (hash-ref b 'planner "omni"))
-  (unless (member planner '("omni" "local")) (fail 400 "planner 应为 omni 或 local"))
+  (define planner (hash-ref b 'planner "model"))
+  (unless (member planner '("model" "omni" "local")) (fail 400 "planner 应为 model、omni 或 local"))
   (define manner (hash-ref b 'manner "full"))
   (unless (member manner '("full" "rule")) (fail 400 "manner 应为 full 或 rule"))
   (define-values (d attempts errs) (generate-case1 seed #:npcs n))
   (unless d (fail 500 "生成失败：~a" errs))
   (define c (datum->case1 d))
-  (define g (new-game1 c #:planner (if (equal? planner "omni") omniscient-planner local-planner)
+  (define g (new-game1 c #:planner (case planner
+                                     [("omni") omniscient-planner]
+                                     [("local") local-planner]
+                                     [else (storynet-planner #:seed seed #:fallback local-planner)])
                        #:manner (if (equal? manner "rule") rule-manner full-manner)))
   (define s (sess (new-id) seed planner g (make-semaphore 1) '() (current-inexact-milliseconds)))
   (add-session! s)

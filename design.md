@@ -135,6 +135,7 @@ KB 分层：
 | `m6/eval-big.sh` | v1 M6：在 `m6/test-big.jsonl`（每种人数 100 案）上分片并行评测；`eval.rkt --from` 合并汇总。见 spec §16.4 |
 | `m6/attrib.rkt` `m6/attrib-run.sh` | v1 M6 逐案归因：正常侦探的破案路线 + 只用排除的侦探所需 AP，分类为凶手赢 / 结构性必输 / 因拆穿而输。见 spec §16.5 |
 | `m6/budget-sweep.rkt` `m6/balance-check.rkt` `m6/balance-run.sh` | v1 平衡：离线扫描预算（故事作用 = 强凶手胜率 − 局部规划器胜率）；真实预算下侦探对 4 种凶手实跑验证。见 spec §17 |
+| `story-net.rkt` `models/storynet-rl3.bin` `m6/export-weights.py` | 凶手故事网络的纯 Racket 推理（与 PyTorch 逐段一致，约 60 ms / 故事）；`storynet-planner` 是游戏里缺省的凶手规划器（API `planner: "model"`，网页"凶手：模型"）；权重由 `m6/export-weights.py` 从 checkpoint 一次性导出。见 spec §18 |
 | `adv-eval.rkt` | 对抗可解性统计（strict / press / 只追问），记录写入 `runs/adv-v1.rktd` |
 | `ap-eval.rkt` | 行动点倍率标定：出示倍率 × 预算，比较检查器 / 启发式 / 穷举玩家。`racket ap-eval.rkt [--seeds N] [--big K] [--out 文件]` |
 | `gen-eval.rkt` | 批量生成 + 校验 + 检查器 + 启发式玩家评测，记录写入 `runs/gen-v1.rktd` |

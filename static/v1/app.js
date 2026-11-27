@@ -75,7 +75,7 @@ function setState(s) {
 
 async function newGame(ev) {
   if (ev) ev.preventDefault();
-  const body = { npcs: Number($("npcs").value), planner: $("omni").checked ? "omni" : "local",
+  const body = { npcs: Number($("npcs").value), planner: $("planner").value,
                  manner: $("manner").checked ? "rule" : "full" };
   const seed = $("seed").value.trim();
   if (seed) body.seed = Number(seed);

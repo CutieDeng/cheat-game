@@ -3,7 +3,7 @@
 (require rackunit racket/list racket/match "map.rkt" "world.rkt" "claims.rkt" "case1.rkt" "memory.rkt" "exclude.rkt" "gen-v1.rkt"
          "engine-v1.rkt" "liar-v1.rkt" "detective-v1.rkt" "text-v1.rkt"
          "api-v1.rkt" (only-in "http-error.rkt" http-error? http-error-code) json
-         "verify-v1.rkt" "teacher-v1.rkt")
+         "verify-v1.rkt" "teacher-v1.rkt" "story-net.rkt" (only-in "m6/export.rkt" case->features))
 
 (define c (load-case1 "cases/manor-v1.rktd"))
 (define m (case1-map c))
@@ -401,3 +401,28 @@
   (check-false (admitted? g2 'E1))
   ;; 校验器：照实的故事被判为自认
   (check-true (hash-ref (verify-story c (truth 'E1) #:detective? #f) 'admits)))
+
+(test-case "凶手故事网络（纯 Racket 推理）：与 PyTorch 逐段相同；规划器给出可行、不自认的故事；API 缺省用它"
+  ;; m6/big-ckpt-rl3.jsonl 的贪心故事由 m6/net.py 在固定槽位下生成；Racket 同条件下应逐段相同（前 12 案，覆盖 4、5 人）
+  (define py (for/list ([l (in-lines (open-input-file "m6/big-ckpt-rl3.jsonl"))] [_ 12]) (string->jsexpr l)))
+  (for ([p py])
+    (define-values (d a e) (generate-case1 (hash-ref p 'seed) #:npcs (hash-ref p 'npcs)))
+    (define f (case->features (datum->case1 d)))
+    (define ids (hash-ref f 'node_ids))
+    (check-equal? (for/list ([s (storynet-generate f #:greedy? #t #:shuffle? #f)]) (list (list-ref ids (first s)) (second s) (third s)))
+                  (hash-ref p 'greedy)))
+  ;; 规划器：各人数都给出合法故事；同一 seed 可复现
+  (for ([n '(4 5 6 8)])
+    (define-values (d a e) (generate-case1 3 #:npcs n))
+    (define cc (datum->case1 d))
+    (define st ((storynet-planner #:seed 3) cc))
+    (define r (verify-story cc st #:detective? #f))
+    (check-true (hash-ref r 'ok))
+    (check-false (hash-ref r 'admits))
+    (check-equal? (path-segs ((storynet-planner #:seed 3) cc)) (path-segs st)))
+  (define-values (code st) (handle-api-v1 "POST" '("games") (hasheq 'npcs 6 'seed 11)))
+  (check-equal? code 201)
+  (check-equal? (hash-ref st 'planner) "model")
+  (check-equal? (let-values ([(c _) (with-handlers ([http-error? (λ (e) (values (http-error-code e) #f))])
+                                      (handle-api-v1 "POST" '("games") (hasheq 'planner "x")))]) c)
+                400))

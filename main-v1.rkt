@@ -2,10 +2,10 @@
 ;; v1 终端菜单（地图版）。
 ;;   racket main-v1.rkt --seed 3 --npcs 5          生成一局
 ;;   racket main-v1.rkt --case cases/xxx.rktd       读案件文件
-;;   --planner local|omni  凶手用哪个规则规划器编故事（缺省 local）
+;;   --planner local|omni|model  凶手用哪个规划器编故事（缺省 local；model = story-net.rkt 的网络）
 ;;   --debug               显示真相与凶手的故事
 (require racket/list racket/match racket/string racket/cmdline racket/format
-         "map.rkt" "world.rkt" "claims.rkt" "case1.rkt" "engine-v1.rkt" "liar-v1.rkt" "text-v1.rkt" "gen-v1.rkt")
+         "map.rkt" "world.rkt" "claims.rkt" "case1.rkt" "engine-v1.rkt" "liar-v1.rkt" "text-v1.rkt" "gen-v1.rkt" "story-net.rkt")
 
 (define (choose prompt options #:back [back "返回"])
   (printf "\n~a\n" prompt)
@@ -129,7 +129,7 @@
                 ["--case" f "案件文件" (file f)]
                 ["--seed" s "生成种子" (seed (string->number s))]
                 ["--npcs" s "人数" (npcs (string->number s))]
-                ["--planner" p "local | omni" (planner p)]
+                ["--planner" p "local | omni | model" (planner p)]
                 ["--debug" "显示真相" (debug #t)])
   (define c
     (if (file)
@@ -137,4 +137,8 @@
         (let-values ([(d a errs) (generate-case1 (seed) #:npcs (npcs))])
           (unless d (eprintf "生成失败：~a\n" errs) (exit 1))
           (datum->case1 d))))
-  (play c (if (equal? (planner) "omni") omniscient-planner local-planner) (debug)))
+  (play c (case (planner)
+            [("omni") omniscient-planner]
+            [("model") (storynet-planner #:seed (seed) #:fallback local-planner)]
+            [else local-planner])
+        (debug)))
